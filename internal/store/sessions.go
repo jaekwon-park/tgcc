@@ -133,6 +133,17 @@ func (s *Store) UpdateSessionStatus(id string, status string) error {
 	return err
 }
 
+// UpdateSessionStatusIf updates the session status only if it currently matches expectedStatus.
+// M4 fix: prevents stale timer goroutines from overwriting a session status that has
+// already changed (e.g. active overwriting failed/crashed/stopped).
+func (s *Store) UpdateSessionStatusIf(id string, expectedStatus string, status string) error {
+	_, err := s.DB.Exec(
+		`UPDATE sessions SET status = ?, last_activity_at = ? WHERE id = ? AND status = ?`,
+		status, CurrentTimeMs(), id, expectedStatus,
+	)
+	return err
+}
+
 func (s *Store) UpdateSessionPID(id string, pid int64) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET pid = ?, last_activity_at = ? WHERE id = ?`, pid, CurrentTimeMs(), id)
 	return err

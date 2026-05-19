@@ -66,16 +66,19 @@ workspace = "work"
 
 # 포럼 토픽별 설정 (thread_id는 텔레그램 포럼 토픽 ID)
 # workspace_path 지정 시 tgcc 시작마다 DB에 자동 sync됨
-[[topic]]
-thread_id         = 283
-honcho_session_id = "topic-infra"
-workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+[[group]]
+chat_id = -1001234567890  # 등록할 포럼 그룹의 chat_id
 
-[[topic]]
-thread_id         = 145
-honcho_session_id = "topic-dev"
-workspace_path    = "/opt/tgcc/workspace/ccgram/dev"
-model             = "claude-sonnet-4-6"   # 토픽별 Claude 모델 지정 (선택)
+  [[group.topic]]
+  thread_id         = 283
+  honcho_session_id = "topic-infra"
+  workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+
+  [[group.topic]]
+  thread_id         = 145
+  honcho_session_id = "topic-dev"
+  workspace_path    = "/opt/tgcc/workspace/ccgram/dev"
+  model             = "claude-sonnet-4-6"   # 토픽별 Claude 모델 지정 (선택)
 ```
 
 > `thread_id` 확인 방법: 포럼 토픽에서 메시지 링크 복사 → URL 형식 `t.me/c/그룹ID/thread_id/메시지ID`

@@ -129,13 +129,15 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 
 	// 8. Wait briefly for claude to initialize, then transition to active
 	// (Hook-based activation comes in M4; for M2 we allow a brief startup window)
+	// M4 fix: conditional update prevents stale timer from overwriting a status
+	// that has already changed (e.g. the hook set it to crashed/failed).
 	go func() {
 		select {
 		case <-time.After(2 * time.Second):
 		case <-ctx.Done():
 			return
 		}
-		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusActive)); cerr != nil {
+		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusSpawning), string(StatusActive)); cerr != nil {
 			m.logger.Error("update status to active", "error", cerr)
 		}
 	}()
@@ -282,13 +284,14 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	}
 
 	// Transition to active after short startup delay
+	// M4 fix: conditional update only if status is still "resuming".
 	go func() {
 		select {
 		case <-time.After(2 * time.Second):
 		case <-ctx.Done():
 			return
 		}
-		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusActive)); cerr != nil {
+		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusResuming), string(StatusActive)); cerr != nil {
 			m.logger.Warn("update status to active on resume", "error", cerr)
 		}
 	}()
@@ -450,13 +453,16 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	newSess.PID = int64(winfo.PID)
 
 	// 6. Wait for claude to initialize, then send summary if provided
+	// M4 fix: conditional update only if status is still "pending" (the initial state
+	// set in step 4). Prevents stale timer from overwriting a session that has
+	// already been changed to failed/crashed/stopped.
 	go func() {
 		select {
 		case <-time.After(3 * time.Second):
 		case <-ctx.Done():
 			return
 		}
-		if err := m.store.UpdateSessionStatus(newID, string(StatusActive)); err != nil {
+		if err := m.store.UpdateSessionStatusIf(newID, string(StatusPending), string(StatusActive)); err != nil {
 			m.logger.Error("update status to active on fresh restart", "error", err)
 		}
 		if summary != "" {
@@ -492,6 +498,20 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 	}
 	defer f.Close()
 
+	// M3 fix: parse using the same nested structure as context/relay.go
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+
 	type turn struct {
 		role    string
 		content string
@@ -505,15 +525,25 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 		if len(line) == 0 {
 			continue
 		}
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(line, &msg); err != nil {
+		var entry transcriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // skip malformed lines
 		}
-		if msg.Role == "user" || msg.Role == "assistant" {
-			turns = append(turns, turn{role: msg.Role, content: msg.Content})
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			turns = append(turns, turn{role: entry.Type, content: strings.Join(parts, "\n")})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -557,6 +587,20 @@ func (m *Manager) SquashOldestNTurns(transcriptPath string, n int) (string, []st
 	}
 	defer f.Close()
 
+	// M3 fix: parse using the same nested structure as context/relay.go
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+
 	type turn struct {
 		role    string
 		content string
@@ -571,15 +615,25 @@ func (m *Manager) SquashOldestNTurns(transcriptPath string, n int) (string, []st
 		if line == "" {
 			continue
 		}
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		var entry transcriptEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if msg.Role == "user" || msg.Role == "assistant" {
-			turns = append(turns, turn{role: msg.Role, content: msg.Content, rawLine: line})
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			turns = append(turns, turn{role: entry.Type, content: strings.Join(parts, "\n"), rawLine: line})
 		}
 	}
 	if err := scanner.Err(); err != nil {

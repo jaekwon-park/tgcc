@@ -78,10 +78,9 @@ func (s *Supervisor) recover(ctx context.Context) {
 				})
 			}
 			s.logger.Info("supervisor: resuming crashed session", "session_id", sess.ID)
-			if err := s.store.UpdateSessionStatus(sess.ID, "resuming"); err != nil {
-				s.logger.Error("supervisor: set resuming failed", "session_id", sess.ID, "err", err)
-				continue
-			}
+			// H2 fix: let Resume() handle the status transition internally.
+			// Previously supervisor set "resuming" before Resume(), causing
+			// Resume()'s CanTransition(resuming→resuming) to always fail.
 			if _, err := s.mgr.Resume(ctx, sess.ID); err != nil {
 				s.logger.Error("supervisor: resume failed", "session_id", sess.ID, "err", err)
 				if uerr := s.store.UpdateSessionStatus(sess.ID, "failed"); uerr != nil {
