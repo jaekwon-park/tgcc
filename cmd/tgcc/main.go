@@ -315,7 +315,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	hookSrv.SetSessionProvider(sessionMgr)
 
 	// 7b. Supervisor (M3) — restart crashed sessions periodically
-	supervisor := session.NewSupervisor(st, sessionMgr, 0)
+	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender)
 	go supervisor.Start(ctx)
 
 	// 8. Router

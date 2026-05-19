@@ -2,7 +2,9 @@
 package session
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -298,12 +300,18 @@ func (m *Manager) ActiveSessionCount() int {
 	activeStatuses := []string{
 		string(StatusPending), string(StatusSpawning), string(StatusActive),
 		string(StatusIdle), string(StatusCrashed), string(StatusResuming), string(StatusStopping),
+		string(StatusHibernated),
 	}
 	count, err := m.store.ActiveSessionCount(activeStatuses)
 	if err != nil {
 		return 0
 	}
 	return count
+}
+
+// KillWindow kills a tmux window by target (session ID or window ID).
+func (m *Manager) KillWindow(target string) error {
+	return m.adapter.KillWindow(target)
 }
 
 // ListActiveSessions returns all sessions that are not in a terminal state.
@@ -350,4 +358,151 @@ func buildClaudeCommand(workspacePath, claudeBin string) string {
 		claudeBin = "claude"
 	}
 	return fmt.Sprintf("cd %s && %s --dangerously-skip-permissions", workspacePath, claudeBin)
+}
+
+// FreshRestart archives the current session and creates a fresh session for the same topic.
+// If summary is non-empty, it is sent as the first message to the new Claude session.
+func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary string, chatID, threadID int64) (*store.Session, error) {
+	// 1. Look up the old session
+	oldSess, err := m.store.SessionByID(oldSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("find old session: %w", err)
+	}
+	if oldSess == nil {
+		return nil, fmt.Errorf("session not found: %s", oldSessionID)
+	}
+
+	// 2. Archive the old session
+	now := store.CurrentTimeMs()
+	if err := m.store.ArchiveSession(oldSessionID, now); err != nil {
+		return nil, fmt.Errorf("archive session: %w", err)
+	}
+
+	// 3. Kill the old tmux window (if still running)
+	target := oldSess.TmuxWindow
+	if target == "" {
+		target = fmt.Sprintf("%s:%s", oldSess.TmuxSession, oldSess.TmuxWindow)
+	}
+	_ = m.adapter.KillWindow(target)
+
+	// 4. Create new session record (same topic_id, same workspace)
+	newID := uuid.New().String()
+	windowName := sanitizeWindowName(filepath.Base(oldSess.WorkspacePath))
+	newSess := &store.Session{
+		ID:             newID,
+		TopicID:        oldSess.TopicID,
+		TmuxSession:    m.tmuxSession,
+		TmuxWindow:     windowName,
+		WorkspacePath:  oldSess.WorkspacePath,
+		Status:         string(StatusPending),
+		CreatedAt:      now,
+		LastActivityAt: now,
+	}
+	if err := m.store.InsertSession(newSess); err != nil {
+		return nil, fmt.Errorf("insert new session: %w", err)
+	}
+
+	// 5. Spawn tmux window with fresh claude
+	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin)
+	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
+	if err != nil {
+		m.store.UpdateSessionStatus(newID, string(StatusFailed))
+		return nil, fmt.Errorf("tmux new-window: %w", err)
+	}
+	if winfo.ID != "" {
+		newSess.TmuxWindow = winfo.ID
+	}
+	if err := m.store.UpdateSessionPID(newID, int64(winfo.PID)); err != nil {
+		m.logger.Warn("update pid failed", "error", err)
+	}
+	newSess.PID = int64(winfo.PID)
+
+	// 6. Wait for claude to initialize, then send summary if provided
+	go func() {
+		time.Sleep(3 * time.Second)
+		if err := m.store.UpdateSessionStatus(newID, string(StatusActive)); err != nil {
+			m.logger.Error("update status to active on fresh restart", "error", err)
+		}
+		if summary != "" {
+			if err := m.adapter.SendKeys(newSess.TmuxWindow, summary); err != nil {
+				m.logger.Warn("send summary on fresh restart failed", "error", err)
+			}
+		}
+	}()
+
+	// 7. Send notification
+	if chatID > 0 && threadID > 0 {
+		m.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chatID,
+			ThreadID: threadID,
+			Text:     "🔄 fresh session — 마지막 10턴 요약만 복구 (transcript 너무 큼)",
+		})
+	}
+
+	return newSess, nil
+}
+
+// SummarizeLastNTurns reads a JSONL transcript and returns a simple text summary
+// of the last N assistant/user exchanges. Returns empty string if transcript
+// cannot be read or has fewer than 2 turns.
+func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return "", fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close()
+
+	type turn struct {
+		role    string
+		content string
+	}
+
+	var turns []turn
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024) // 10MB max line
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal(line, &msg); err != nil {
+			continue // skip malformed lines
+		}
+		if msg.Role == "user" || msg.Role == "assistant" {
+			turns = append(turns, turn{role: msg.Role, content: msg.Content})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan transcript: %w", err)
+	}
+
+	if len(turns) == 0 {
+		return "", nil
+	}
+
+	// Take last N*2 turns (N exchanges = N user + N assistant messages)
+	maxTurns := n * 2
+	if len(turns) > maxTurns {
+		turns = turns[len(turns)-maxTurns:]
+	}
+
+	var sb strings.Builder
+	sb.WriteString("이전 세션에서 이어집니다. 마지막 대화 요약:\n\n")
+	for _, t := range turns {
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n", t.role, truncateString(t.content, 2000)))
+	}
+
+	return sb.String(), nil
+}
+
+// truncateString truncates a string to maxLen characters, adding "..." if truncated.
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen] + "..."
 }

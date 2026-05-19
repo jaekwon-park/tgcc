@@ -17,29 +17,29 @@ type Session struct {
 	Status          string
 	LastActivityAt  int64
 	CreatedAt       int64
+	ArchivedAt      int64
+	TranscriptPath  string
 	TranscriptBytes int64
 	TurnCount       int64
 	CompactCount    int64
 	LastCompactAt   int64
 }
 
-// InsertSession creates a new session record.
 func (s *Store) InsertSession(session *Session) error {
 	_, err := s.DB.Exec(
 		`INSERT INTO sessions
-		(id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at, archived_at, transcript_path)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.TopicID, session.TmuxSession, session.TmuxWindow, session.WorkspacePath,
-		nullString(session.ClaudeSessionID), nullInt64(session.PID), session.Status, session.LastActivityAt, session.CreatedAt,
+		nullString(session.ClaudeSessionID), nullInt64(session.PID), session.Status, session.LastActivityAt, session.CreatedAt, nil, nullString(session.TranscriptPath),
 	)
 	return err
 }
 
-// SessionByID returns a session by its UUID.
 func (s *Store) SessionByID(id string) (*Session, error) {
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
-		transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
 		FROM sessions WHERE id = ?`,
 		id,
 	)
@@ -53,12 +53,11 @@ func (s *Store) SessionByID(id string) (*Session, error) {
 	return session, nil
 }
 
-// SessionByTopicID returns the active session for a topic.
 func (s *Store) SessionByTopicID(topicID int64) (*Session, error) {
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
-		transcript_bytes, turn_count, compact_count, last_compact_at
-		FROM sessions WHERE topic_id = ?`,
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		FROM sessions WHERE topic_id = ? AND archived_at IS NULL`,
 		topicID,
 	)
 	session, err := scanSession(row.Scan)
@@ -71,7 +70,6 @@ func (s *Store) SessionByTopicID(topicID int64) (*Session, error) {
 	return session, nil
 }
 
-// ActiveSessions returns all sessions with status in the given list.
 func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 	if len(statuses) == 0 {
 		return []*Session{}, nil
@@ -85,7 +83,7 @@ func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 	}
 
 	query := `SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
-		transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
 		FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `)`
 	rows, err := s.DB.Query(query, args...)
 	if err != nil {
@@ -108,7 +106,6 @@ func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 	return sessions, nil
 }
 
-// ActiveSessionCount returns the count of sessions matching the given statuses.
 func (s *Store) ActiveSessionCount(statuses []string) (int, error) {
 	if len(statuses) == 0 {
 		return 0, nil
@@ -130,25 +127,21 @@ func (s *Store) ActiveSessionCount(statuses []string) (int, error) {
 	return count, nil
 }
 
-// UpdateSessionStatus changes the session status.
 func (s *Store) UpdateSessionStatus(id string, status string) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET status = ?, last_activity_at = ? WHERE id = ?`, status, CurrentTimeMs(), id)
 	return err
 }
 
-// UpdateSessionPID updates the session PID.
 func (s *Store) UpdateSessionPID(id string, pid int64) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET pid = ?, last_activity_at = ? WHERE id = ?`, pid, CurrentTimeMs(), id)
 	return err
 }
 
-// UpdateSessionClaudeID updates the claude_session_id.
 func (s *Store) UpdateSessionClaudeID(id string, claudeSessionID string) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET claude_session_id = ?, last_activity_at = ? WHERE id = ?`, claudeSessionID, CurrentTimeMs(), id)
 	return err
 }
 
-// UpdateSessionContext updates transcript size and turn count after each Claude turn.
 func (s *Store) UpdateSessionContext(sessionID string, transcriptBytes, turnCount int64) error {
 	_, err := s.DB.Exec(
 		`UPDATE sessions SET transcript_bytes = ?, turn_count = ?, last_activity_at = ? WHERE id = ?`,
@@ -157,7 +150,6 @@ func (s *Store) UpdateSessionContext(sessionID string, transcriptBytes, turnCoun
 	return err
 }
 
-// UpdateSessionCompact records a compaction event.
 func (s *Store) UpdateSessionCompact(sessionID string, compactCount int64, lastCompactAt int64) error {
 	_, err := s.DB.Exec(
 		`UPDATE sessions SET compact_count = ?, last_compact_at = ?, last_activity_at = ? WHERE id = ?`,
@@ -166,7 +158,17 @@ func (s *Store) UpdateSessionCompact(sessionID string, compactCount int64, lastC
 	return err
 }
 
-// DeleteSession removes a session record.
+func (s *Store) ArchiveSession(id string, archivedAt int64) error {
+	_, err := s.DB.Exec(`UPDATE sessions SET archived_at = ?, last_activity_at = ? WHERE id = ?`, archivedAt, CurrentTimeMs(), id)
+	return err
+}
+
+// UpdateSessionTranscriptPath updates the transcript path for a session.
+func (s *Store) UpdateSessionTranscriptPath(id string, path string) error {
+	_, err := s.DB.Exec(`UPDATE sessions SET transcript_path = ?, last_activity_at = ? WHERE id = ?`, path, CurrentTimeMs(), id)
+	return err
+}
+
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	return err
@@ -176,11 +178,13 @@ func scanSession(scan func(dest ...interface{}) error) (*Session, error) {
 	session := &Session{}
 	var claudeSessionID sql.NullString
 	var pid sql.NullInt64
+	var archivedAt sql.NullInt64
+	var transcriptPath sql.NullString
 	var lastCompactAt sql.NullInt64
 	err := scan(
 		&session.ID, &session.TopicID, &session.TmuxSession, &session.TmuxWindow, &session.WorkspacePath,
 		&claudeSessionID, &pid, &session.Status, &session.LastActivityAt, &session.CreatedAt,
-		&session.TranscriptBytes, &session.TurnCount, &session.CompactCount, &lastCompactAt,
+		&archivedAt, &transcriptPath, &session.TranscriptBytes, &session.TurnCount, &session.CompactCount, &lastCompactAt,
 	)
 	if err != nil {
 		return nil, err
@@ -190,6 +194,12 @@ func scanSession(scan func(dest ...interface{}) error) (*Session, error) {
 	}
 	if pid.Valid {
 		session.PID = pid.Int64
+	}
+	if archivedAt.Valid {
+		session.ArchivedAt = archivedAt.Int64
+	}
+	if transcriptPath.Valid {
+		session.TranscriptPath = transcriptPath.String
 	}
 	if lastCompactAt.Valid {
 		session.LastCompactAt = lastCompactAt.Int64
