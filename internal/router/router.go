@@ -65,7 +65,7 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 	case "/pair":
 		return r.handlePair(ctx, update, user)
 	case "/register":
-		return r.handleRegister(ctx, update, user)
+		return r.handleRegister(ctx, update, user, fields)
 	case "/help":
 		return r.handleHelp(ctx, update, user)
 	case "/whoami":
@@ -153,7 +153,7 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		if sess.TranscriptPath != "" {
 			summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
 		}
-		honchoSessionID := fmt.Sprintf("tgcc-topic-%d", topic.ID)
+		honchoSessionID := topic.HonchoSessionID()
 		summary = r.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 		if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chat.ID, threadID); err != nil {
 			r.logger.Error("hibernate recovery failed", "error", err)
@@ -253,7 +253,10 @@ func (r *Router) handleWhoami(ctx context.Context, update bot.Update, user *stor
 }
 
 // handleRegister responds to the /register command.
-func (r *Router) handleRegister(ctx context.Context, update bot.Update, user *store.User) error {
+// Supports optional parameters:
+//
+//	honcho_session=<session-id>  — set honcho session ID for this topic
+func (r *Router) handleRegister(ctx context.Context, update bot.Update, user *store.User, fields []string) error {
 	_ = ctx
 	if update.Message == nil || update.Message.Chat == nil {
 		return nil
@@ -274,10 +277,36 @@ func (r *Router) handleRegister(ctx context.Context, update bot.Update, user *st
 	if err := r.store.InsertChat(chat.ID, chat.Title, chat.IsForum, user.UserID); err != nil {
 		return err
 	}
+
+	// Parse optional parameters: honcho_session=<value>
+	var honchoSessionID string
+	for i := 1; i < len(fields); i++ {
+		parts := strings.SplitN(fields[i], "=", 2)
+		if len(parts) == 2 && parts[0] == "honcho_session" {
+			honchoSessionID = parts[1]
+		}
+	}
+
+	// If honcho_session_id is provided, set it on the topic (register implies topic creation or update)
+	if honchoSessionID != "" {
+		topic, err := r.ensureTopic(ctx, chat.ID, threadID, "")
+		if err != nil {
+			r.logger.Warn("ensure topic for honcho_session update failed", "error", err)
+		} else if topic != nil {
+			if err := r.store.UpdateTopicHonchoSession(topic.ID, honchoSessionID); err != nil {
+				r.logger.Warn("update honcho_session_id failed", "error", err)
+			}
+		}
+	}
+
+	msg := "✅ 이 포럼 그룹이 등록되었습니다."
+	if honchoSessionID != "" {
+		msg += fmt.Sprintf("\nHoncho 세션: %s", honchoSessionID)
+	}
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,
 		ThreadID: threadID,
-		Text:     "✅ 이 포럼 그룹이 등록되었습니다.",
+		Text:     msg,
 	})
 	return nil
 }
@@ -801,7 +830,7 @@ func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *sto
 	if sess.TranscriptPath != "" {
 		summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
 	}
-	honchoSessionID := fmt.Sprintf("tgcc-topic-%d", topic.ID)
+	honchoSessionID := topic.HonchoSessionID()
 	summary = r.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 
 	r.sender.Enqueue(bot.OutgoingMsg{

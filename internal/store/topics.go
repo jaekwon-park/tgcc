@@ -1,6 +1,9 @@
 package store
 
-import "database/sql"
+import (
+	"database/sql"
+	"fmt"
+)
 
 // Topic represents a telegram forum topic.
 type Topic struct {
@@ -9,6 +12,7 @@ type Topic struct {
 	ThreadID         int64
 	Name             string
 	WorkspacePath    string
+	honchoSessionID  sql.NullString
 	ContextOverrides string
 	CreatedAt        int64
 }
@@ -51,8 +55,8 @@ func (s *Store) ChatByID(chatID int64) (*Chat, error) {
 func (s *Store) InsertTopic(chatID int64, threadID int64, name string) (*Topic, error) {
 	now := CurrentTimeMs()
 	res, err := s.DB.Exec(
-		`INSERT INTO topics (chat_id, thread_id, name, workspace_path, context_overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
-		chatID, threadID, name, nil, nil, now,
+		`INSERT INTO topics (chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		chatID, threadID, name, nil, nil, nil, now,
 	)
 	if err != nil {
 		return nil, err
@@ -73,12 +77,13 @@ func (s *Store) InsertTopic(chatID int64, threadID int64, name string) (*Topic, 
 // TopicByChatThread returns a topic by chat_id and thread_id.
 func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) {
 	var workspace sql.NullString
+	var honchoSession sql.NullString
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, context_overrides, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &ctxOverrides, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -88,6 +93,7 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	if workspace.Valid {
 		t.WorkspacePath = workspace.String
 	}
+	t.honchoSessionID = honchoSession
 	if ctxOverrides.Valid {
 		t.ContextOverrides = ctxOverrides.String
 	}
@@ -97,12 +103,13 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 // TopicByID returns a topic by its internal ID.
 func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var workspace sql.NullString
+	var honchoSession sql.NullString
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, context_overrides, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &ctxOverrides, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -112,6 +119,7 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	if workspace.Valid {
 		t.WorkspacePath = workspace.String
 	}
+	t.honchoSessionID = honchoSession
 	if ctxOverrides.Valid {
 		t.ContextOverrides = ctxOverrides.String
 	}
@@ -128,4 +136,20 @@ func (s *Store) UpdateTopicWorkspace(topicID int64, workspacePath string) error 
 func (s *Store) UpdateTopicContextOverrides(topicID int64, overridesJSON string) error {
 	_, err := s.DB.Exec(`UPDATE topics SET context_overrides = ? WHERE id = ?`, nullString(overridesJSON), topicID)
 	return err
+}
+
+// UpdateTopicHonchoSession sets the honcho_session_id for a topic.
+func (s *Store) UpdateTopicHonchoSession(topicID int64, honchoSessionID string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET honcho_session_id = ? WHERE id = ?`, nullString(honchoSessionID), topicID)
+	return err
+}
+
+// HonchoSessionID returns the effective Honcho session ID for this topic.
+// If honcho_session_id is set in the DB, it returns that value.
+// Otherwise, falls back to the legacy format "tgcc-topic-{ID}".
+func (t *Topic) HonchoSessionID() string {
+	if t.honchoSessionID.Valid && t.honchoSessionID.String != "" {
+		return t.honchoSessionID.String
+	}
+	return fmt.Sprintf("tgcc-topic-%d", t.ID)
 }
