@@ -226,6 +226,13 @@ func (h *Handlers) HandleNotification(w http.ResponseWriter, r *http.Request) {
 
 	sessionID, _ := payload["session_id"].(string)
 	message, _ := payload["message"].(string)
+
+	// Filter out noisy Claude Code "waiting for your input" notifications
+	if message != "" && strings.Contains(strings.ToLower(message), "waiting for") {
+		h.logger.Info("hook notification: filtered waiting-for message", "session_id", sessionID, "message", message)
+		message = ""
+	}
+
 	h.logger.Info("hook notification received", "session_id", sessionID, "message", message)
 
 	if sessionID != "" && message != "" && h.store != nil && h.sender != nil {
