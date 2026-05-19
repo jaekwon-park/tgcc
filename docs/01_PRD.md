@@ -166,3 +166,4 @@ v0.1 MVP가 다음 조건을 모두 만족하면 릴리스:
 | Claude Code hook 스펙 변경 | 알림 누락 | hook 페이로드 버전 필드 검증, capture-pane 폴백 |
 | 텔레그램 Forum Topics API 변경 | 토픽 매핑 깨짐 | `message_thread_id`만 의존, 토픽 메타데이터는 캐싱 |
 | SQLite 파일 락 충돌 | 데이터 손실 | WAL 모드, 단일 프로세스 보장 (PID lock file) |
+| 장수 세션의 context 누적 | 응답 지연, 정확도 저하, Claude 내부 강제 compaction | turn/byte 임계치 모니터링 + 자동 `/compact` + crash 시 fresh+representation 분기 — 상세는 [05_CONTEXT_LIFECYCLE.md](../docs/05_CONTEXT_LIFECYCLE.md) |

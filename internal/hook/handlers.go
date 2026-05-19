@@ -15,7 +15,7 @@ import (
 
 // ContextMonitor is the interface for context lifecycle monitoring.
 type ContextMonitor interface {
-	OnStopHook(ctx context.Context, sessionID, transcriptPath string, chatID, threadID int64) error
+	OnStopHook(ctx context.Context, sessionID, transcriptPath string) error
 }
 
 // Handlers processes different hook event types.
@@ -128,9 +128,7 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 
 	// Also notify context monitor for context tracking/compaction
 	if h.monitor != nil {
-		chatIDFloat, _ := payload["chat_id"].(float64)
-		threadIDFloat, _ := payload["thread_id"].(float64)
-		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath, int64(chatIDFloat), int64(threadIDFloat)); err != nil {
+		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
 			h.logger.Warn("context monitor OnStopHook failed", "error", err)
 		}
 	}
