@@ -10,6 +10,7 @@
 | [01_PRD.md](./01_PRD.md) | 기획서 — 배경, 목표/비목표, 시나리오, 마일스톤 |
 | [02_ARCHITECTURE.md](./02_ARCHITECTURE.md) | 시스템 다이어그램, ACL 모델, 상태 머신, SQLite 스키마 |
 | [03_API.md](./03_API.md) | 텔레그램 봇 커맨드, Hook 인터페이스, CLI, 내부 HTTP API |
+| [05_CONTEXT_LIFECYCLE.md](./05_CONTEXT_LIFECYCLE.md) | 컨텍스트 누적 완화 정책 (compact / fresh 분기 / hibernate) |
 
 ## 한눈에 보기
 

@@ -15,7 +15,7 @@ import (
 
 // ContextMonitor is the interface for context lifecycle monitoring.
 type ContextMonitor interface {
-	OnStopHook(ctx context.Context, sessionID, transcriptPath string, chatID, threadID int64) error
+	OnStopHook(ctx context.Context, sessionID, transcriptPath string) error
 }
 
 // Handlers processes different hook event types.
@@ -94,10 +94,22 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("hook stop received", "session_id", sessionID, "transcript_path", transcriptPath)
 
 	if sessionID != "" && h.store != nil && h.sender != nil {
-		sess, err := h.store.SessionByID(sessionID)
+		// Look up by Claude session_id first (set during SessionStart hook),
+		// fall back to cwd-based matching if the cwd field is available.
+		sess, err := h.store.SessionByClaudeID(sessionID)
 		if err != nil {
-			h.logger.Warn("hook stop: session lookup failed", "error", err, "session_id", sessionID)
-		} else if sess != nil {
+			h.logger.Warn("hook stop: session lookup by claude_id failed", "error", err, "session_id", sessionID)
+		}
+		if sess == nil {
+			// Fallback: try to match by cwd (workspace path)
+			if cwd, _ := payload["cwd"].(string); cwd != "" {
+				sess, err = h.store.SessionByWorkspaceAndStatus(cwd, []string{"active", "idle", "compacting"})
+				if err != nil {
+					h.logger.Warn("hook stop: session lookup by workspace failed", "error", err, "cwd", cwd)
+				}
+			}
+		}
+		if sess != nil {
 			topic, err := h.store.TopicByID(sess.TopicID)
 			if err != nil {
 				h.logger.Warn("hook stop: topic lookup failed", "error", err, "topic_id", sess.TopicID)
@@ -116,9 +128,7 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 
 	// Also notify context monitor for context tracking/compaction
 	if h.monitor != nil {
-		chatIDFloat, _ := payload["chat_id"].(float64)
-		threadIDFloat, _ := payload["thread_id"].(float64)
-		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath, int64(chatIDFloat), int64(threadIDFloat)); err != nil {
+		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
 			h.logger.Warn("context monitor OnStopHook failed", "error", err)
 		}
 	}

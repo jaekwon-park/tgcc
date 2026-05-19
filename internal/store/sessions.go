@@ -84,7 +84,7 @@ func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 
 	query := `SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
 		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
-		FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `)`
+		FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `) AND archived_at IS NULL`
 	rows, err := s.DB.Query(query, args...)
 	if err != nil {
 		return nil, err
@@ -118,7 +118,7 @@ func (s *Store) ActiveSessionCount(statuses []string) (int, error) {
 		args[i] = status
 	}
 
-	query := `SELECT COUNT(*) FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `)`
+	query := `SELECT COUNT(*) FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `) AND archived_at IS NULL`
 	var count int
 	err := s.DB.QueryRow(query, args...).Scan(&count)
 	if err != nil {
@@ -194,6 +194,27 @@ func (s *Store) ArchivedSessionsByTopic(topicID int64) ([]*Session, error) {
 		return nil, err
 	}
 	return sessions, nil
+}
+
+// SessionByClaudeID returns a session by its Claude Code internal session ID.
+func (s *Store) SessionByClaudeID(claudeID string) (*Session, error) {
+	if claudeID == "" {
+		return nil, nil
+	}
+	row := s.DB.QueryRow(
+		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		FROM sessions WHERE claude_session_id = ? AND archived_at IS NULL`,
+		claudeID,
+	)
+	session, err := scanSession(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
 }
 
 func (s *Store) DeleteSession(id string) error {
