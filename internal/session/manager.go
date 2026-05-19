@@ -51,7 +51,7 @@ func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sen
 
 // Spawn creates a new Claude Code session for the given topic and workspace.
 // It performs: session insert → tmux new-window → claude execution → status update.
-func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string, chatID int64, threadID int64) (*store.Session, error) {
+func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string, chatID int64, threadID int64, model string) (*store.Session, error) {
 	// 1. Validate workspace exists
 	if _, err := os.Stat(workspacePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("workspace not found: %s", workspacePath)
@@ -96,7 +96,7 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	sess.Status = string(StatusSpawning)
 
 	// 5. Build claude command
-	claudeCmd := buildClaudeCommand(workspacePath, m.claudeBin)
+	claudeCmd := buildClaudeCommand(workspacePath, m.claudeBin, model)
 	m.logger.Info("spawning session", "session_id", sessionID, "window", windowName, "cmd", claudeCmd)
 
 	// 6. Spawn tmux window
@@ -241,6 +241,11 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	}
 	resumeCmd := fmt.Sprintf("cd %s && %s --resume %s",
 		sess.WorkspacePath, m.claudeBin, claudeSessionID)
+	// Append model flag if topic has one configured
+	topic, topicErr := m.store.TopicByID(sess.TopicID)
+	if topicErr == nil && topic != nil && topic.ClaudeModel.Valid {
+		resumeCmd += fmt.Sprintf(" --model %s", topic.ClaudeModel.String)
+	}
 
 	windowName := sanitizeWindowName(filepath.Base(sess.WorkspacePath)) + "-r"
 	m.logger.Info("resuming session", "session_id", sessionID, "claude_session", claudeSessionID)
@@ -353,11 +358,15 @@ func sanitizeWindowName(name string) string {
 }
 
 // buildClaudeCommand constructs the shell command to spawn claude.
-func buildClaudeCommand(workspacePath, claudeBin string) string {
+func buildClaudeCommand(workspacePath, claudeBin, model string) string {
 	if claudeBin == "" {
 		claudeBin = "claude"
 	}
-	return fmt.Sprintf("cd %s && %s --dangerously-skip-permissions", workspacePath, claudeBin)
+	cmd := fmt.Sprintf("cd %s && %s --dangerously-skip-permissions", workspacePath, claudeBin)
+	if model != "" {
+		cmd += fmt.Sprintf(" --model %s", model)
+	}
+	return cmd
 }
 
 // FreshRestart archives the current session and creates a fresh session for the same topic.
@@ -403,7 +412,11 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	}
 
 	// 5. Spawn tmux window with fresh claude
-	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin)
+	var freshModel string
+	if topic, err2 := m.store.TopicByChatThread(chatID, threadID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
+		freshModel = topic.ClaudeModel.String
+	}
+	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin, freshModel)
 	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
 	if err != nil {
 		m.store.UpdateSessionStatus(newID, string(StatusFailed))

@@ -249,6 +249,34 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	defer st.Close()
 	logger.Info("sqlite connected", "path", cfg.DBPath)
 
+	// Sync topics from tgcc.toml
+	tomlCfg, tomlErr := config.LoadTgccToml(cfg.TgccTomlPath)
+	if tomlErr != nil {
+		logger.Warn("failed to load tgcc.toml, skipping topic sync", "error", tomlErr)
+	} else if tomlCfg != nil && len(tomlCfg.Topics) > 0 {
+		synced := 0
+		for _, tc := range tomlCfg.Topics {
+			rows, err := st.DB.Query("SELECT id, chat_id FROM topics WHERE thread_id = ?", tc.ThreadID)
+			if err != nil {
+				logger.Warn("topic lookup failed for tgcc.toml sync", "thread_id", tc.ThreadID, "error", err)
+				continue
+			}
+			var topicID, chatID int64
+			for rows.Next() {
+				if err := rows.Scan(&topicID, &chatID); err != nil {
+					continue
+				}
+				if err := st.UpsertTopic(chatID, tc.ThreadID, tc.HonchoSessionID, tc.Model); err != nil {
+					logger.Warn("upsert topic from tgcc.toml failed", "thread_id", tc.ThreadID, "error", err)
+					continue
+				}
+				synced++
+			}
+			rows.Close()
+		}
+		logger.Info("tgcc.toml topic sync complete", "synced", synced)
+	}
+
 	// 2. Set defaults
 	tmuxBin := cfg.TmuxBin
 	if tmuxBin == "" {
