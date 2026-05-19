@@ -59,13 +59,22 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 		return nil, fmt.Errorf("workspace not found: %s", workspacePath)
 	}
 
-	// 2. Check for existing active session on this topic
+	// 2. Check for existing session on this topic. The
+	// uq_sessions_active_topic index allows at most one non-archived row per
+	// topic, so any dead-but-not-archived predecessor (stopped/failed/crashed)
+	// must be archived before InsertSession or we'd hit the UNIQUE constraint.
 	existing, err := m.store.SessionByTopicID(topicID)
 	if err != nil {
 		return nil, fmt.Errorf("check existing session: %w", err)
 	}
-	if existing != nil && m.sm.IsActive(Status(existing.Status)) {
-		return existing, fmt.Errorf("topic already has active session (status: %s)", existing.Status)
+	if existing != nil {
+		if m.sm.IsActive(Status(existing.Status)) {
+			return existing, fmt.Errorf("topic already has active session (status: %s)", existing.Status)
+		}
+		if err := m.store.ArchiveSession(existing.ID, store.CurrentTimeMs()); err != nil {
+			return nil, fmt.Errorf("archive predecessor session %s: %w", existing.ID, err)
+		}
+		m.logger.Info("archived predecessor session before spawn", "session_id", existing.ID, "status", existing.Status)
 	}
 
 	// 3. Create session record
