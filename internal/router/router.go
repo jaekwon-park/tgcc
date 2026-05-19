@@ -235,6 +235,17 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		return err
 	}
 
+	// Acknowledge the forward so the user sees Claude received the message
+	// even before the (potentially long) turn finishes via the Stop hook.
+	// Claude Code's Notification hook only fires for specific events (permission
+	// prompts, etc.), so without this ack the topic looks frozen between input
+	// and response.
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     "💭 처리 중...",
+	})
+
 	return nil
 }
 
