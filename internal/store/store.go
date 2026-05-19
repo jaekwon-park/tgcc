@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	_ "modernc.org/sqlite"
 )
@@ -53,13 +54,19 @@ func (s *Store) migrate() error {
 		return fmt.Errorf("get executable path: %w", err)
 	}
 	migrationsDir := filepath.Join(filepath.Dir(exe), "migrations")
-	migrationFile := filepath.Join(migrationsDir, "0001_init.sql")
-	data, err := os.ReadFile(migrationFile)
+	files, err := filepath.Glob(migrationsDir + "/*.sql")
 	if err != nil {
-		return fmt.Errorf("read %s: %w", filepath.Base(migrationFile), err)
+		return fmt.Errorf("glob migrations: %w", err)
 	}
-	if _, err := s.DB.Exec(string(data)); err != nil {
-		return fmt.Errorf("exec %s: %w", filepath.Base(migrationFile), err)
+	sort.Strings(files)
+	for _, f := range files {
+		data, err := os.ReadFile(f)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", filepath.Base(f), err)
+		}
+		if _, err := s.DB.Exec(string(data)); err != nil {
+			return fmt.Errorf("exec %s: %w", filepath.Base(f), err)
+		}
 	}
 	return nil
 }

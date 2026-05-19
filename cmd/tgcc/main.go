@@ -22,6 +22,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	"github.com/jaekwon-park/tgcc/internal/config"
+	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
 	"github.com/jaekwon-park/tgcc/internal/hook"
 	"github.com/jaekwon-park/tgcc/internal/router"
 	"github.com/jaekwon-park/tgcc/internal/session"
@@ -281,14 +282,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	}
 	_ = tmux.NewParser()
 
-	// 4b. Hook server — internal HTTP API + Claude Code hook receiver
-	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger)
-	go func() {
-		if err := hookSrv.Start(ctx); err != nil {
-			logger.Error("hook server failed", "error", err)
-		}
-	}()
-
 	// 5. Bot client & sender
 	client := bot.NewClient(cfg.TelegramBotToken)
 	sender := bot.NewSender(client, logger)
@@ -306,6 +299,17 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	workspaceRoot := cfg.HomeDir
 	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot)
 
+	// 4c. Context lifecycle monitor (M6)
+	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
+
+	// 4b. Hook server — internal HTTP API + Claude Code hook receiver
+	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger, ctxMon)
+	go func() {
+		if err := hookSrv.Start(ctx); err != nil {
+			logger.Error("hook server failed", "error", err)
+		}
+	}()
+
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
 
@@ -314,7 +318,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	go supervisor.Start(ctx)
 
 	// 8. Router
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr)
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)

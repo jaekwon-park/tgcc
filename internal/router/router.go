@@ -12,6 +12,7 @@ import (
 
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
+	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
 )
@@ -24,11 +25,12 @@ type Router struct {
 	guard      *acl.Guard
 	pairingMgr *acl.PairingManager
 	mgr        *session.Manager
+	ctxMon     *tmuxctx.Monitor
 }
 
 // NewRouter creates a new Router.
-func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager) *Router {
-	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr}
+func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor) *Router {
+	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon}
 }
 
 // Route dispatches an incoming message from an allowed user to the appropriate handler.
@@ -78,6 +80,11 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 		return r.handleList(ctx, update, user)
 	case "/workspaces":
 		return r.handleWorkspaces(ctx, update, user)
+	// M6 context lifecycle commands
+	case "/compact":
+		return r.handleCompact(ctx, update, user)
+	case "/ctxstatus":
+		return r.handleCtxStatus(ctx, update, user)
 	default:
 		r.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   update.Message.Chat.ID,
@@ -184,7 +191,7 @@ func (r *Router) handleHelp(ctx context.Context, update bot.Update, user *store.
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
-		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/help — 도움말\n/whoami — 본인 정보",
+		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/help — 도움말\n/whoami — 본인 정보",
 	})
 	return nil
 }
@@ -632,6 +639,89 @@ func (r *Router) handleWorkspaces(ctx context.Context, update bot.Update, user *
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
 		Text:     sb.String(),
+	})
+	return nil
+}
+
+// ============================================================================
+// M6 context lifecycle command handlers
+// ============================================================================
+
+// handleCompact processes /compact — trigger context compaction for the active session.
+func (r *Router) handleCompact(ctx context.Context, update bot.Update, user *store.User) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	sess, err := r.mgr.GetSessionByTopic(topic.ID)
+	if err != nil || sess == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	if err := r.ctxMon.CompactSession(ctx, sess.ID, chat.ID, threadID); err != nil {
+		r.logger.Error("compact failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ compact 실패: %v", err),
+		})
+		return err
+	}
+	return nil
+}
+
+// handleCtxStatus processes /ctxstatus — show context usage for the active session.
+func (r *Router) handleCtxStatus(ctx context.Context, update bot.Update, user *store.User) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	sess, err := r.mgr.GetSessionByTopic(topic.ID)
+	if err != nil || sess == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	status := r.ctxMon.CtxStatus(ctx, sess.ID)
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     status,
 	})
 	return nil
 }

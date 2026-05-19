@@ -1,22 +1,29 @@
 package hook
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
 )
 
+// ContextMonitor is the interface for context lifecycle monitoring.
+type ContextMonitor interface {
+	OnStopHook(ctx context.Context, sessionID, transcriptPath string, chatID, threadID int64) error
+}
+
 // Handlers processes different hook event types.
 type Handlers struct {
-	logger *slog.Logger
+	logger  *slog.Logger
+	monitor ContextMonitor
 }
 
 // NewHandlers creates new hook Handlers.
-func NewHandlers(logger *slog.Logger) *Handlers {
+func NewHandlers(logger *slog.Logger, monitor ContextMonitor) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handlers{logger: logger}
+	return &Handlers{logger: logger, monitor: monitor}
 }
 
 // HandleSessionStart handles POST /hooks/session-start from Claude Code.
@@ -56,6 +63,17 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("hook stop received", "session_id", payload["session_id"])
+
+	if h.monitor != nil {
+		sessionID, _ := payload["session_id"].(string)
+		transcriptPath, _ := payload["transcript_path"].(string)
+		chatIDFloat, _ := payload["chat_id"].(float64)
+		threadIDFloat, _ := payload["thread_id"].(float64)
+		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath, int64(chatIDFloat), int64(threadIDFloat)); err != nil {
+			h.logger.Error("context monitor OnStopHook failed", "error", err)
+		}
+	}
+
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 }
