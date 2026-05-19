@@ -222,6 +222,7 @@ type TopicConfig struct {
 	ThreadID        int64  `toml:"thread_id"`
 	HonchoSessionID string `toml:"honcho_session_id"`
 	Model           string `toml:"model"`
+	WorkspacePath   string `toml:"workspace_path"`
 }
 
 // TgccToml represents the root of tgcc.toml.
