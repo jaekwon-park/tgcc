@@ -7,8 +7,8 @@ After=network.target
 Type=simple
 User=insainty
 WorkingDirectory=/home/insainty
-EnvironmentFile=/home/insainty/.tgcc/.env
-ExecStart=/home/insainty/bin/tgcc serve
+EnvironmentFile=/opt/tgcc/bin/.env
+ExecStart=/opt/tgcc/bin/tgcc serve
 Restart=always
 RestartSec=5
 
@@ -22,7 +22,7 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/insainty/.tgcc /home/insainty/projects
+ReadWritePaths=/opt/tgcc/bin /home/insainty/projects
 ReadOnlyPaths=/home/insainty/.claude
 
 # Logging
