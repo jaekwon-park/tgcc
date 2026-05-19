@@ -79,6 +79,12 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("could not create tgcc directory: %w", err)
 	}
 
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("could not determine executable path: %w", err)
+	}
+	exeDir := filepath.Dir(exe)
+
 	envPath := filepath.Join(tgccDir, ".env")
 	m, err := parseEnvFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
@@ -101,22 +107,21 @@ func Load() (*Config, error) {
 
 	cfg := &Config{
 		TelegramBotToken: token,
-		DBPath:           getEnvOrDefault(m, "TGCC_DB_PATH", filepath.Join(tgccDir, "state.db")),
+		DBPath:           getEnvOrDefault(m, "TGCC_DB_PATH", filepath.Join(exeDir, "state.db")),
 		HookPort:         hookPort,
 		HookToken:        getEnvOrDefault(m, "TGCC_HOOK_TOKEN", ""),
 		LogLevel:         getEnvOrDefault(m, "TGCC_LOG_LEVEL", "info"),
 		TmuxBin:          getEnvOrDefault(m, "TGCC_TMUX_BIN", "tmux"),
 		ClaudeBin:        getEnvOrDefault(m, "TGCC_CLAUDE_BIN", "claude"),
 		TmuxSession:      getEnvOrDefault(m, "TGCC_TMUX_SESSION", ""),
-		TgccTomlPath:     getEnvOrDefault(m, "TGCC_TOML_PATH", filepath.Join(tgccDir, "tgcc.toml")),
+		TgccTomlPath:     getEnvOrDefault(m, "TGCC_TOML_PATH", filepath.Join(exeDir, "tgcc.toml")),
 		HomeDir:          homeDir,
 		TgccDir:          tgccDir,
 		Context:          DefaultContextConfig(),
 		Honcho:           honcho.DefaultHonchoConfig(),
 	}
 
-	tomlPath := filepath.Join(tgccDir, "tgcc.toml")
-	if err := loadTOML(tomlPath, cfg); err != nil && !os.IsNotExist(err) {
+	if err := loadTOML(cfg.TgccTomlPath, cfg); err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("could not load tgcc.toml: %w", err)
 	}
 
