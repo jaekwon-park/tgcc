@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -53,21 +55,42 @@ func (h *Handlers) HandleSessionStart(w http.ResponseWriter, r *http.Request) {
 	cwd, _ := payload["cwd"].(string)
 	h.logger.Info("hook session-start received", "session_id", sessionID, "cwd", cwd)
 
-	if cwd != "" && h.store != nil {
-		sess, err := h.store.SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"})
-		if err != nil {
-			h.logger.Warn("hook session-start: lookup session by workspace failed", "error", err, "cwd", cwd)
-		} else if sess != nil {
-			if err := h.store.UpdateSessionClaudeID(sess.ID, sessionID); err != nil {
-				h.logger.Warn("hook session-start: update claude_session_id failed", "error", err)
-			}
-			if err := h.store.UpdateSessionStatus(sess.ID, "active"); err != nil {
-				h.logger.Warn("hook session-start: update status to active failed", "error", err)
-			}
-			h.logger.Info("hook session-start: session activated", "tgcc_session_id", sess.ID, "claude_session_id", sessionID)
-		} else {
-			h.logger.Warn("hook session-start: no pending/spawning session found for cwd", "cwd", cwd)
+	// Try correlation_id matching first (precise 1:1 match, prevents race on same workspace)
+	correlationID := ""
+	if env, ok := payload["env"].(map[string]interface{}); ok {
+		if cid, ok2 := env["TGCC_CORRELATION_ID"].(string); ok2 {
+			correlationID = cid
 		}
+	}
+
+	var sess *store.Session
+	if correlationID != "" && h.store != nil {
+		var lookupErr error
+		sess, lookupErr = h.store.SessionByCorrelationID(correlationID)
+		if lookupErr != nil {
+			h.logger.Warn("hook session-start: lookup by correlation_id failed", "error", lookupErr, "correlation_id", correlationID)
+		}
+	}
+
+	// Fall back to cwd matching if correlation_id didn't find a match
+	if sess == nil && cwd != "" && h.store != nil {
+		var lookupErr error
+		sess, lookupErr = h.store.SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"})
+		if lookupErr != nil {
+			h.logger.Warn("hook session-start: lookup session by workspace failed", "error", lookupErr, "cwd", cwd)
+		}
+	}
+
+	if sess != nil {
+		if err := h.store.UpdateSessionClaudeID(sess.ID, sessionID); err != nil {
+			h.logger.Warn("hook session-start: update claude_session_id failed", "error", err)
+		}
+		if err := h.store.UpdateSessionStatus(sess.ID, "active"); err != nil {
+			h.logger.Warn("hook session-start: update status to active failed", "error", err)
+		}
+		h.logger.Info("hook session-start: session activated", "tgcc_session_id", sess.ID, "claude_session_id", sessionID, "correlation_id", correlationID)
+	} else if cwd != "" {
+		h.logger.Warn("hook session-start: no pending/spawning session found", "cwd", cwd, "correlation_id", correlationID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -143,7 +166,13 @@ func (h *Handlers) extractLastAssistantMessage(transcriptPath string) string {
 	if transcriptPath == "" {
 		return ""
 	}
-	f, err := os.Open(transcriptPath)
+	// Validate and sanitize transcript path to prevent path traversal
+	cleaned := filepath.Clean(transcriptPath)
+	if !strings.HasPrefix(cleaned, filepath.Clean(homeClaudeProjects())) {
+		h.logger.Warn("hook stop: transcript path outside allowed directory", "path", transcriptPath, "cleaned", cleaned)
+		return ""
+	}
+	f, err := os.Open(cleaned)
 	if err != nil {
 		h.logger.Warn("hook stop: open transcript failed", "path", transcriptPath, "error", err)
 		return ""
@@ -169,11 +198,21 @@ func (h *Handlers) extractLastAssistantMessage(transcriptPath string) string {
 			lastAssistant = msg.Content
 		}
 	}
-	_ = scanner.Err()
+	if err := scanner.Err(); err != nil {
+		h.logger.Warn("hook stop: scanner error reading transcript", "path", transcriptPath, "error", err)
+	}
 	if len(lastAssistant) > 4000 {
 		lastAssistant = lastAssistant[:4000]
 	}
 	return lastAssistant
+}
+
+func homeClaudeProjects() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.Getenv("HOME"), ".claude", "projects")
+	}
+	return filepath.Join(home, ".claude", "projects")
 }
 
 // HandleNotification handles POST /hooks/notification from Claude Code.
