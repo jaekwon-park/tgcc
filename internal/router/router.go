@@ -1290,6 +1290,12 @@ func (r *Router) ensureTopic(ctx context.Context, chatID int64, threadID int64, 
 				break
 			}
 		}
+		// M1 fix: re-query after autoRegisterTopic updates fields
+		// (WorkspacePath, HonchoSessionID) that the insert-time pointer lacks.
+		topic, err = r.store.TopicByChatThread(chatID, threadID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return topic, nil
 }
@@ -1315,12 +1321,21 @@ func (r *Router) autoRegisterTopic(ctx context.Context, chatID int64, threadID i
 		topicName = fmt.Sprintf("topic-%d", threadID)
 	}
 
-	// Create slug from topic name
-	slug := slugifyName(topicName)
+	// Create slug from topic name (M2: use topic-{threadID} as fallback for non-ASCII names)
+	slug := slugifyName(topicName, fmt.Sprintf("topic-%d", threadID))
 
 	// Build honcho session ID and workspace path
+	// M5 fix: sanitize gc.Name to prevent path traversal (e.g. "../" in group name).
+	groupSlug := slugifyName(gc.Name, "group")
 	honchoSessionID := fmt.Sprintf("topic-%s", slug)
-	workspacePath := filepath.Join(r.exeDir, "workspace", gc.Name, slug)
+	workspacePath := filepath.Join(r.exeDir, "workspace", groupSlug, slug)
+
+	// Verify workspace path stays within exeDir after cleaning
+	cleanPath := filepath.Clean(workspacePath)
+	cleanExeDir := filepath.Clean(r.exeDir)
+	if !strings.HasPrefix(cleanPath, cleanExeDir+string(filepath.Separator)) {
+		return fmt.Errorf("workspace path escapes exeDir: %s", cleanPath)
+	}
 
 	// Create workspace directory
 	if err := os.MkdirAll(workspacePath, 0700); err != nil {
@@ -1357,7 +1372,9 @@ func (r *Router) autoRegisterTopic(ctx context.Context, chatID int64, threadID i
 
 // slugifyName converts a name to a URL-safe slug.
 // Lowercase, spaces to hyphens, remove non-ASCII characters.
-func slugifyName(name string) string {
+// M2 fix: accepts fallback string for when slug is empty (e.g. Korean-only names).
+// Previously all non-ASCII names collapsed to "untitled", causing workspace/Honcho collisions.
+func slugifyName(name string, fallback string) string {
 	var sb strings.Builder
 	for _, r := range strings.ToLower(name) {
 		if r == ' ' || r == '-' || r == '_' {
@@ -1368,12 +1385,17 @@ func slugifyName(name string) string {
 	}
 	slug := strings.Trim(sb.String(), "-")
 	if slug == "" {
-		slug = "untitled"
+		if fallback != "" {
+			slug = fallback
+		} else {
+			slug = "untitled"
+		}
 	}
 	return slug
 }
 
 // appendTopicToToml appends a [[group.topic]] entry to the correct [[group]] block in tgcc.toml.
+// H3 fix: checks for duplicate thread_id before appending to prevent re-registration dups.
 func appendTopicToToml(path string, chatID, threadID int64, honchoSessionID, workspacePath string) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -1384,6 +1406,14 @@ func appendTopicToToml(path string, chatID, threadID int64, honchoSessionID, wor
 	}
 
 	lines := strings.Split(string(content), "\n")
+
+	// H3: check if thread_id already exists in the file — skip if duplicate
+	threadIDStr := fmt.Sprintf("thread_id = %d", threadID)
+	for _, line := range lines {
+		if strings.Contains(strings.TrimSpace(line), threadIDStr) {
+			return nil // already registered, skip
+		}
+	}
 
 	// Build the topic entry
 	topicEntry := fmt.Sprintf("  [[group.topic]]\n  thread_id         = %d\n  honcho_session_id = \"%s\"\n  workspace_path    = \"%s\"", threadID, honchoSessionID, workspacePath)

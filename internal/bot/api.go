@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -38,13 +39,13 @@ type Update struct {
 
 // Message represents a Telegram message.
 type Message struct {
-	MessageID       int64  `json:"message_id"`
-	From            *User  `json:"from,omitempty"`
-	Chat            *Chat  `json:"chat"`
-	Date            int64  `json:"date"`
-	Text            string `json:"text,omitempty"`
-	MessageThreadID int64  `json:"message_thread_id,omitempty"`
-	IsTopicMessage  bool   `json:"is_topic_message,omitempty"`
+	MessageID         int64              `json:"message_id"`
+	From              *User              `json:"from,omitempty"`
+	Chat              *Chat              `json:"chat"`
+	Date              int64              `json:"date"`
+	Text              string             `json:"text,omitempty"`
+	MessageThreadID   int64              `json:"message_thread_id,omitempty"`
+	IsTopicMessage    bool               `json:"is_topic_message,omitempty"`
 	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
 }
 
@@ -84,11 +85,16 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 	return updates, nil
 }
 
+// htmlEscaper replaces characters that are reserved in Telegram HTML parse_mode.
+var htmlEscaper = strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;")
+
 // SendMessage sends a text message to a chat.
+// L1 fix: HTML-escape text to prevent Telegram API errors from unescaped &, <, >.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, text string, replyToMessageID int64, messageThreadID int64) (*Message, error) {
+	escapedText := htmlEscaper.Replace(text)
 	params := map[string]interface{}{
 		"chat_id":    chatID,
-		"text":       text,
+		"text":       escapedText,
 		"parse_mode": "HTML",
 	}
 	if replyToMessageID > 0 {

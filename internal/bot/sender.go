@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -16,10 +17,11 @@ type OutgoingMsg struct {
 
 // Sender queues outgoing messages and sends them respecting Telegram rate limits.
 type Sender struct {
-	client *Client
-	logger *slog.Logger
-	queue  chan OutgoingMsg
-	done   chan struct{}
+	client   *Client
+	logger   *slog.Logger
+	queue    chan OutgoingMsg
+	done     chan struct{}
+	stopOnce sync.Once // L2 fix: prevents double-close panic
 }
 
 // NewSender creates a new Sender.
@@ -63,8 +65,11 @@ func (s *Sender) Start(ctx context.Context) error {
 }
 
 // Stop signals the sender to shut down.
+// L2 fix: use sync.Once to prevent panic on double close.
 func (s *Sender) Stop() {
-	close(s.done)
+	s.stopOnce.Do(func() {
+		close(s.done)
+	})
 }
 
 // rateLimiter is a simple token bucket for rate limiting.
