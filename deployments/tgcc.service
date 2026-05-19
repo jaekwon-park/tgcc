@@ -18,12 +18,18 @@ KillSignal=SIGTERM
 TimeoutStopSec=10
 
 # Security hardening
+# Note: ProtectHome is intentionally NOT set. Claude Code (spawned per session)
+# needs to write to several paths under $HOME beyond ~/.claude — notably ~/.local/
+# (Claude version cache), ~/.cache, and Node's npm/npx temp dirs. Enabling
+# ProtectHome=read-only + an explicit ReadWritePaths list caused Claude's TUI to
+# silently fail to render (process running, pane blank, no transcript ever
+# written). ProtectSystem=strict + NoNewPrivileges + PrivateTmp still constrain
+# the bot itself; tighten ProtectHome again only after auditing every path Claude
+# Code touches at startup and per-spawn.
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ProtectHome=read-only
-ReadWritePaths=/opt/tgcc/bin /home/insainty/projects
-ReadOnlyPaths=/home/insainty/.claude
+ReadWritePaths=/opt/tgcc/bin /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
 
 # Logging
 StandardOutput=journal
