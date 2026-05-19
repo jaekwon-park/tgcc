@@ -67,16 +67,11 @@ type tomlFile struct {
 	Honcho  honcho.HonchoConfig `toml:"honcho"`
 }
 
-// Load reads .env from ~/.tgcc/.env and returns parsed Config.
+// Load reads .env from the binary directory and returns parsed Config.
 func Load() (*Config, error) {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("could not determine home directory: %w", err)
-	}
-	tgccDir := filepath.Join(homeDir, ".tgcc")
-
-	if err := ensureDir(tgccDir); err != nil {
-		return nil, fmt.Errorf("could not create tgcc directory: %w", err)
 	}
 
 	exe, err := os.Executable()
@@ -85,7 +80,10 @@ func Load() (*Config, error) {
 	}
 	exeDir := filepath.Dir(exe)
 
-	envPath := filepath.Join(tgccDir, ".env")
+	// Keep tgccDir for any legacy usage; primary config lives in exeDir.
+	tgccDir := exeDir
+
+	envPath := filepath.Join(exeDir, ".env")
 	m, err := parseEnvFile(envPath)
 	if err != nil && !os.IsNotExist(err) {
 		return nil, fmt.Errorf("could not parse env file: %w", err)
