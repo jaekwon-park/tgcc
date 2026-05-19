@@ -197,9 +197,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		logger.Warn("could not ensure tmux session exists", "error", err)
 	}
 
-	// 4. Init stubs (for future milestones)
-	_ = session.NewSupervisor()
-	_ = session.NewReconciler()
+	// 4. Reconciler + Supervisor (M3)
+	reconciler := session.NewReconciler(st, tmuxAdapter)
+	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
+		logger.Warn("reconciler run failed", "error", err)
+	}
 	_ = tmux.NewParser()
 	_ = hook.NewServer()
 	_ = hook.NewHandlers()
@@ -220,6 +222,10 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
 	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot)
+
+	// 7b. Supervisor (M3) — restart crashed sessions periodically
+	supervisor := session.NewSupervisor(st, sessionMgr, 0)
+	go supervisor.Start(ctx)
 
 	// 8. Router
 	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr)
