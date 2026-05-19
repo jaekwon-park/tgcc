@@ -229,13 +229,24 @@ func (h *Handlers) HandleNotification(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("hook notification received", "session_id", sessionID, "message", message)
 
 	if sessionID != "" && message != "" && h.store != nil && h.sender != nil {
-		sess, err := h.store.SessionByID(sessionID)
+		// Same Claude-UUID-vs-tgcc-PK issue as the Stop hook: the hook payload
+		// session_id is Claude Code's internal UUID, populated as
+		// claude_session_id by the SessionStart hook. Look that up first, fall
+		// back to SessionByID for callers that already know the tgcc id.
+		sess, err := h.store.SessionByClaudeID(sessionID)
 		if err != nil {
-			h.logger.Warn("hook notification: session lookup failed", "error", err, "session_id", sessionID)
-		} else if sess != nil {
-			topic, err := h.store.TopicByID(sess.TopicID)
+			h.logger.Warn("hook notification: lookup by claude_session_id failed", "error", err, "session_id", sessionID)
+		}
+		if sess == nil {
+			sess, err = h.store.SessionByID(sessionID)
 			if err != nil {
-				h.logger.Warn("hook notification: topic lookup failed", "error", err, "topic_id", sess.TopicID)
+				h.logger.Warn("hook notification: lookup by id failed", "error", err, "session_id", sessionID)
+			}
+		}
+		if sess != nil {
+			topic, terr := h.store.TopicByID(sess.TopicID)
+			if terr != nil {
+				h.logger.Warn("hook notification: topic lookup failed", "error", terr, "topic_id", sess.TopicID)
 			} else if topic != nil {
 				h.sender.Enqueue(bot.OutgoingMsg{
 					ChatID:   topic.ChatID,

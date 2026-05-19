@@ -48,14 +48,28 @@ func NewMonitor(st *store.Store, tx *tmux.Adapter, sender *bot.Sender, cfg confi
 
 // OnStopHook is called by the Claude Code stop hook after each turn.
 // It updates context stats and checks thresholds.
+//
+// The hook payload's session_id is Claude Code's internal session UUID — not
+// tgcc's primary key. We look up via claude_session_id (populated by the
+// session-start hook) and fall back to SessionByID to support pre-relay tgcc
+// sessions or transcript-based recovery paths that already know the tgcc id.
 func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath string) error {
-	session, err := m.store.SessionByID(sessionID)
+	session, err := m.store.SessionByClaudeID(sessionID)
 	if err != nil {
-		return fmt.Errorf("look up session %s: %w", sessionID, err)
+		return fmt.Errorf("look up session by claude_session_id %s: %w", sessionID, err)
 	}
 	if session == nil {
-		return fmt.Errorf("session %s not found", sessionID)
+		session, err = m.store.SessionByID(sessionID)
+		if err != nil {
+			return fmt.Errorf("look up session %s: %w", sessionID, err)
+		}
 	}
+	if session == nil {
+		return fmt.Errorf("session %s not found (tried claude_session_id and id)", sessionID)
+	}
+	// Re-bind the working id to the tgcc primary key so downstream store calls
+	// (which expect the tgcc id) don't accidentally use Claude's session UUID.
+	sessionID = session.ID
 
 	var chatID, threadID int64
 	topic, err := m.store.TopicByID(session.TopicID)

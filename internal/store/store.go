@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	_ "modernc.org/sqlite"
@@ -48,7 +49,10 @@ func (s *Store) Close() error {
 }
 
 // migrate applies all SQL migration files in alphabetical order from the
-// migrations directory located next to the executable.
+// migrations directory located next to the executable. Files whose numeric
+// prefix is <= the schema_version stored in system_meta are skipped, making
+// startup idempotent across service restarts. The first migration (0001) is
+// always run on a fresh DB because system_meta doesn't exist yet.
 func (s *Store) migrate() error {
 	exe, err := os.Executable()
 	if err != nil {
@@ -69,7 +73,12 @@ func (s *Store) migrate() error {
 	}
 	sort.Strings(files)
 
+	currentVersion := s.currentSchemaVersion()
 	for _, name := range files {
+		fileVer := migrationFileVersion(name)
+		if fileVer > 0 && fileVer <= currentVersion {
+			continue
+		}
 		data, err := os.ReadFile(filepath.Join(migrationsDir, name))
 		if err != nil {
 			return fmt.Errorf("read %s: %w", name, err)
@@ -79,6 +88,34 @@ func (s *Store) migrate() error {
 		}
 	}
 	return nil
+}
+
+// currentSchemaVersion returns the applied schema version, or 0 if the
+// system_meta table doesn't exist yet (fresh DB) or the row is missing.
+func (s *Store) currentSchemaVersion() int {
+	var v string
+	if err := s.DB.QueryRow(`SELECT value FROM system_meta WHERE key = 'schema_version'`).Scan(&v); err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+// migrationFileVersion extracts the leading integer from a filename like
+// "0002_context_lifecycle.sql" → 2. Returns 0 if the prefix can't be parsed.
+func migrationFileVersion(name string) int {
+	idx := strings.IndexByte(name, '_')
+	if idx <= 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(name[:idx])
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 // execMigration runs a single migration file's SQL, skipping ALTER TABLE ADD COLUMN
@@ -110,10 +147,21 @@ func (s *Store) execMigration(name, sql string) error {
 	return nil
 }
 
-// splitStatements splits SQL text into individual statements by semicolon.
+// splitStatements splits SQL text into individual statements by semicolon,
+// stripping full-line `--` comments first so they don't leak into token parsing
+// (e.g. parseAlterAddColumn) or get passed to SQLite where they would otherwise
+// be harmless but obscure the parsed statement boundaries.
 func splitStatements(sql string) []string {
+	var b strings.Builder
+	for _, line := range strings.Split(sql, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "--") {
+			continue
+		}
+		b.WriteString(line)
+		b.WriteString("\n")
+	}
 	var parts []string
-	for _, s := range strings.Split(sql, ";") {
+	for _, s := range strings.Split(b.String(), ";") {
 		if strings.TrimSpace(s) != "" {
 			parts = append(parts, s)
 		}
@@ -122,18 +170,17 @@ func splitStatements(sql string) []string {
 }
 
 // parseAlterAddColumn extracts table and column names from an ALTER TABLE ... ADD COLUMN statement.
+// Token layout: ALTER[0] TABLE[1] <table>[2] ADD[3] COLUMN[4] <column>[5] ...
 func parseAlterAddColumn(stmt string) (table, column string, ok bool) {
 	upper := strings.ToUpper(stmt)
-	addIdx := strings.Index(upper, "ADD COLUMN")
-	if addIdx < 0 {
+	if !strings.Contains(upper, "ADD COLUMN") {
 		return "", "", false
 	}
-	// tokens: ALTER TABLE <table> ADD COLUMN <column> ...
 	fields := strings.Fields(stmt)
-	if len(fields) < 5 {
+	if len(fields) < 6 {
 		return "", "", false
 	}
-	return fields[2], fields[4], true
+	return fields[2], fields[5], true
 }
 
 // columnExists reports whether the given column exists in the given table.

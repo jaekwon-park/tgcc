@@ -3,6 +3,7 @@ package router
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
@@ -142,13 +143,58 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	if err != nil {
 		return fmt.Errorf("get session: %w", err)
 	}
+	// Treat terminal (dead) sessions as "no session" so a previously-killed or
+	// failed session doesn't block auto-spawn on a topic the user clearly still
+	// wants to use. Crashed sessions also re-spawn — /resume is still available
+	// for users who explicitly want to recover the old conversation.
+	if sess != nil {
+		switch sess.Status {
+		case "stopped", "failed", "crashed":
+			sess = nil
+		}
+	}
 	if sess == nil {
-		r.sender.Enqueue(bot.OutgoingMsg{
-			ChatID:   chat.ID,
-			ThreadID: threadID,
-			Text:     "이 토픽에 활성 세션이 없습니다. /new <workspace>로 시작하세요.",
-		})
-		return nil
+		// Auto-spawn when the topic has an auto-mapped workspace_path so the user
+		// doesn't have to type /new — covers both tgcc.toml-mapped topics and new
+		// topics that just went through autoRegisterTopic via ensureTopic above.
+		if topic.WorkspacePath == "" {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     "이 토픽에 활성 세션이 없습니다. /new <workspace>로 시작하세요.",
+			})
+			return nil
+		}
+		model := ""
+		if topic.ClaudeModel.Valid {
+			model = topic.ClaudeModel.String
+		}
+		spawned, err := r.mgr.Spawn(ctx, topic.ID, topic.WorkspacePath, chat.ID, threadID, model)
+		if err != nil {
+			r.logger.Error("auto-spawn failed", "error", err, "topic_id", topic.ID, "workspace", topic.WorkspacePath)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("❌ 세션 자동 생성 실패: %v\n/new <workspace>로 직접 시작하세요.", err),
+			})
+			return err
+		}
+		sess = spawned
+		// Spawn transitions spawning→active after ~2s in a goroutine. Poll until
+		// active so ForwardMessage below doesn't fail with "session not active".
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			s, gerr := r.store.SessionByID(sess.ID)
+			if gerr == nil && s != nil && s.Status == "active" {
+				sess = s
+				break
+			}
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
 
 	if sess.Status == "hibernated" {
@@ -188,6 +234,17 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		})
 		return err
 	}
+
+	// Acknowledge the forward so the user sees Claude received the message
+	// even before the (potentially long) turn finishes via the Stop hook.
+	// Claude Code's Notification hook only fires for specific events (permission
+	// prompts, etc.), so without this ack the topic looks frozen between input
+	// and response.
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     "💭 처리 중...",
+	})
 
 	return nil
 }
@@ -353,12 +410,14 @@ func (r *Router) handleNew(ctx context.Context, update bot.Update, user *store.U
 		return fmt.Errorf("ensure topic: %w", err)
 	}
 
-	// Determine workspace path
+	// Determine workspace path: explicit arg > topic's stored workspace_path
+	// (auto-mapped from tgcc.toml or autoRegisterTopic) > fall back to listing.
 	var workspacePath string
 	if len(fields) >= 2 {
 		workspacePath = fields[1]
+	} else if topic.WorkspacePath != "" {
+		workspacePath = topic.WorkspacePath
 	} else {
-		// No workspace specified — list available workspaces
 		return r.handleWorkspaces(ctx, update, user)
 	}
 
@@ -1342,6 +1401,11 @@ func (r *Router) autoRegisterTopic(ctx context.Context, chatID int64, threadID i
 		return fmt.Errorf("create workspace dir: %w", err)
 	}
 
+	// Pre-trust the workspace in ~/.claude.json so Claude Code doesn't block on
+	// its interactive "Do you trust this folder?" prompt the first time it spawns
+	// here. Best-effort — workspace registration still proceeds if this fails.
+	r.ensureClaudeWorkspaceTrust(workspacePath)
+
 	// Create CLAUDE.md template
 	claudeMDPath := filepath.Join(workspacePath, "CLAUDE.md")
 	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
@@ -1368,6 +1432,80 @@ func (r *Router) autoRegisterTopic(ctx context.Context, chatID int64, threadID i
 		Text:     fmt.Sprintf("✅ 새 토픽 자동 등록 완료\n이름: %s\n워크스페이스: %s", topicName, workspacePath),
 	})
 	return nil
+}
+
+// ensureClaudeWorkspaceTrust adds the workspace path to ~/.claude.json with
+// hasTrustDialogAccepted=true so Claude Code skips its interactive
+// "Do you trust this folder?" prompt when it first spawns inside the workspace.
+// Without this, auto-spawned sessions hang on the prompt waiting for the user
+// to press Enter — and tgcc's tmux send-keys path can't reliably confirm it.
+// Best-effort: any I/O or parse error is logged and ignored so workspace
+// registration still completes.
+func (r *Router) ensureClaudeWorkspaceTrust(workspacePath string) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		r.logger.Warn("claude trust: home dir unknown, skipping", "error", err)
+		return
+	}
+	path := filepath.Join(home, ".claude.json")
+
+	var data map[string]interface{}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			r.logger.Warn("claude trust: read .claude.json failed", "path", path, "error", err)
+			return
+		}
+		data = make(map[string]interface{})
+	} else {
+		if err := json.Unmarshal(raw, &data); err != nil {
+			r.logger.Warn("claude trust: parse .claude.json failed", "path", path, "error", err)
+			return
+		}
+	}
+
+	projects, _ := data["projects"].(map[string]interface{})
+	if projects == nil {
+		projects = make(map[string]interface{})
+		data["projects"] = projects
+	}
+	entry, _ := projects[workspacePath].(map[string]interface{})
+	if entry == nil {
+		entry = make(map[string]interface{})
+		projects[workspacePath] = entry
+	}
+	if accepted, _ := entry["hasTrustDialogAccepted"].(bool); accepted {
+		return
+	}
+	entry["hasTrustDialogAccepted"] = true
+	if _, ok := entry["allowedTools"]; !ok {
+		entry["allowedTools"] = []interface{}{}
+	}
+	if _, ok := entry["mcpContextUris"]; !ok {
+		entry["mcpContextUris"] = []interface{}{}
+	}
+	if _, ok := entry["mcpServers"]; !ok {
+		entry["mcpServers"] = map[string]interface{}{}
+	}
+
+	out, err := json.MarshalIndent(data, "", "  ")
+	if err != nil {
+		r.logger.Warn("claude trust: marshal failed", "error", err)
+		return
+	}
+	// Atomic write: temp file in the same dir, then rename. Prevents Claude
+	// from observing a half-written file if it happens to read concurrently.
+	tmpPath := path + ".tgcc-tmp"
+	if err := os.WriteFile(tmpPath, out, 0600); err != nil {
+		r.logger.Warn("claude trust: write temp failed", "path", tmpPath, "error", err)
+		return
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		r.logger.Warn("claude trust: rename failed", "path", path, "error", err)
+		_ = os.Remove(tmpPath)
+		return
+	}
+	r.logger.Info("claude trust: workspace trusted", "workspace", workspacePath)
 }
 
 // slugifyName converts a name to a URL-safe slug.

@@ -25,7 +25,7 @@ type Client struct {
 func NewClient(token string) *Client {
 	return &Client{
 		token:      token,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 		baseURL:    telegramBaseURL,
 	}
 }
