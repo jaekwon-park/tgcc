@@ -392,10 +392,6 @@ tgcc/
 │       └── config.go
 ├── migrations/
 │   └── 0001_init.sql            # 위의 CREATE TABLE 묶음
-├── workspace/                   # 토픽별 Claude Code 워크스페이스 템플릿
-│   ├── {그룹이름}/              # 텔레그램 그룹명 (예: ccgram, hongbot-group)
-│   │   └── {토픽이름}/         # 토픽명 (예: infra, dev, gpu, devops, game-dev, general)
-│   │       └── CLAUDE.md        # 토픽별 Claude Code 지시문
 ├── go.mod
 ├── go.sum
 └── README.md
@@ -420,8 +416,8 @@ tgcc/
 ### 워크스페이스 실제 예시 (ccgram 그룹)
 
 ```
-/opt/tgcc/workspace/
-├── ccgram/
+{exe_dir}/workspace/
+├── ccgram/                      # 텔레그램 그룹명
 │   ├── infra/CLAUDE.md
 │   ├── dev/CLAUDE.md
 │   ├── gpu/CLAUDE.md
@@ -433,6 +429,7 @@ tgcc/
 ```
 
 tgcc.toml의 `[[topic]]`에 `workspace_path`를 지정하면 tgcc 시작 시 DB에 자동 sync된다.
+`bin/` 전체는 `.gitignore` 대상이므로 워크스페이스 파일은 배포 시 수동 생성한다.
 
 ---
 

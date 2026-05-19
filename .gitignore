@@ -1,8 +1,4 @@
-bin/tgcc
-bin/.env
-bin/state.db
-bin/state.db-shm
-bin/state.db-wal
+bin/
 *.db
 *.db-shm
 *.db-wal
