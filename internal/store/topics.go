@@ -14,6 +14,7 @@ type Topic struct {
 	WorkspacePath    string
 	honchoSessionID  sql.NullString
 	ContextOverrides string
+	ClaudeModel      sql.NullString
 	CreatedAt        int64
 }
 
@@ -81,9 +82,9 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -107,9 +108,9 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -144,6 +145,12 @@ func (s *Store) UpdateTopicHonchoSession(topicID int64, honchoSessionID string) 
 	return err
 }
 
+// UpdateTopicModel sets the claude_model for a topic.
+func (s *Store) UpdateTopicModel(topicID int64, model string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET claude_model = ? WHERE id = ?`, model, topicID)
+	return err
+}
+
 // HonchoSessionID returns the effective Honcho session ID for this topic.
 // If honcho_session_id is set in the DB, it returns that value.
 // Otherwise, falls back to the legacy format "tgcc-topic-{ID}".
@@ -152,4 +159,15 @@ func (t *Topic) HonchoSessionID() string {
 		return t.honchoSessionID.String
 	}
 	return fmt.Sprintf("tgcc-topic-%d", t.ID)
+}
+
+// UpsertTopic inserts or updates a topic record by (chat_id, thread_id).
+func (s *Store) UpsertTopic(chatID int64, threadID int64, name string, model string) error {
+	now := CurrentTimeMs()
+	_, err := s.DB.Exec(
+		`INSERT INTO topics (chat_id, thread_id, name, claude_model, created_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, thread_id) DO UPDATE SET name = excluded.name, claude_model = excluded.claude_model`,
+		chatID, threadID, name, nullString(model), now,
+	)
+	return err
 }
