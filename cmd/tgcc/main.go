@@ -23,8 +23,8 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	"github.com/jaekwon-park/tgcc/internal/config"
 	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
-	"github.com/jaekwon-park/tgcc/internal/hook"
 	"github.com/jaekwon-park/tgcc/internal/honcho"
+	"github.com/jaekwon-park/tgcc/internal/hook"
 	"github.com/jaekwon-park/tgcc/internal/router"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -76,7 +76,7 @@ func printUsage() {
 	fmt.Fprintf(os.Stderr, `tgcc — Telegram Forum Topics ↔ Claude Code 브릿지
 
 사용법:
-  tgcc init              초기 설정 (~/.tgcc/.env 생성)
+  tgcc init              초기 설정 (바이너리 디렉토리에 .env 생성)
   tgcc pair <코드>       페어링 코드로 인증 완료
   tgcc serve             데몬 실행 (봇 + Hook 서버 시작)
   tgcc status            실행 중인 tgcc 상태 확인
@@ -90,18 +90,22 @@ func printUsage() {
 `)
 }
 
-// cmdInit initializes ~/.tgcc/ with .env template and SQLite DB.
+// cmdInit initializes the binary directory with .env template and migrations.
 func cmdInit() {
-	homeDir, err := os.UserHomeDir()
+	exe, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "❌ 홈 디렉터리 확인 실패: %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ 실행 파일 경로 확인 실패: %v\n", err)
 		os.Exit(1)
 	}
-	tgccDir := filepath.Join(homeDir, ".tgcc")
-	if err := os.MkdirAll(tgccDir, 0o700); err != nil {
-		fmt.Fprintf(os.Stderr, "❌ 디렉터리 생성 실패: %v\n", err)
+	exeDir := filepath.Dir(exe)
+
+	// Ensure migrations/ directory exists next to the binary
+	migrationsDir := filepath.Join(exeDir, "migrations")
+	if err := os.MkdirAll(migrationsDir, 0o700); err != nil {
+		fmt.Fprintf(os.Stderr, "❌ migrations 디렉터리 생성 실패: %v\n", err)
 		os.Exit(1)
 	}
+
 	tokenBytes := make([]byte, 16)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ 랜덤 토큰 생성 실패: %v\n", err)
@@ -109,14 +113,14 @@ func cmdInit() {
 	}
 	hookToken := hex.EncodeToString(tokenBytes)
 
-	envPath := filepath.Join(tgccDir, ".env")
-	envText := fmt.Sprintf("TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN_HERE\nTGCC_HOOK_TOKEN=%s\nTGCC_LOG_LEVEL=info\nTGCC_DB_PATH=%s\nTGCC_HOOK_PORT=47829\n", hookToken, filepath.Join(tgccDir, "state.db"))
+	envPath := filepath.Join(exeDir, ".env")
+	envText := fmt.Sprintf("TELEGRAM_BOT_TOKEN=YOUR_BOT_TOKEN_HERE\nTGCC_HOOK_TOKEN=%s\nTGCC_LOG_LEVEL=info\nTGCC_DB_PATH=%s\nTGCC_HOOK_PORT=47829\n", hookToken, filepath.Join(exeDir, "state.db"))
 	if err := os.WriteFile(envPath, []byte(envText), 0o600); err != nil {
 		fmt.Fprintf(os.Stderr, "❌ .env 파일 생성 실패: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("✅ 초기화 완료: %s\n", tgccDir)
+	fmt.Printf("✅ 초기화 완료: %s\n", exeDir)
 	fmt.Printf("✅ 환경 파일 생성: %s\n", envPath)
 }
 
@@ -349,7 +353,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 			logger.Error("hook server failed", "error", err)
 		}
 	}()
-
 
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)

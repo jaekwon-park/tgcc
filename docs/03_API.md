@@ -382,20 +382,17 @@ tgcc는 hook 응답으로 Claude의 동작을 **차단하지 않는다** (v0.1).
 ```
 용도: 초기 설정
 동작:
-  1. ~/.tgcc/ 디렉토리 생성
+  1. 바이너리 디렉토리에 migrations/ 생성
   2. .env 템플릿 작성 (TELEGRAM_BOT_TOKEN, TGCC_HOOK_TOKEN 등)
-  3. tgcc.toml 템플릿 작성 (workspace_roots 등)
-  4. SQLite 초기화 (~/.tgcc/state.db)
-  5. ~/.claude/settings.json 에 hook 자동 등록 안내
+  3. ~/.claude/settings.json 에 hook 자동 등록 안내
 ```
 
 **예시:**
 ```bash
 $ tgcc init
-✅ ~/.tgcc/.env 생성
-✅ ~/.tgcc/tgcc.toml 생성
-✅ ~/.tgcc/state.db 초기화
-⚠️  ~/.tgcc/.env 의 TELEGRAM_BOT_TOKEN 을 BotFather에서 받은 토큰으로 설정하세요.
+✅ 초기화 완료: /opt/tgcc/bin
+✅ 환경 파일 생성: /opt/tgcc/bin/.env
+⚠️  .env 의 TELEGRAM_BOT_TOKEN 을 BotFather에서 받은 토큰으로 설정하세요.
 ```
 
 ### 3.2 `tgcc pair <code>`
@@ -438,16 +435,16 @@ $ tgcc init
 
 ### 3.6 환경변수 / 설정 파일
 
-`~/.tgcc/.env`:
+`{exe_dir}/.env`:
 ```bash
 TELEGRAM_BOT_TOKEN=123456:ABC...
 TGCC_HOOK_TOKEN=<32자 랜덤>
 TGCC_LOG_LEVEL=info
-TGCC_DB_PATH=~/.tgcc/state.db
+TGCC_DB_PATH={exe_dir}/state.db
 TGCC_HOOK_PORT=47829
 ```
 
-`~/.tgcc/tgcc.toml`:
+`{exe_dir}/tgcc.toml`:
 ```toml
 [workspace]
 roots = ["~/projects", "~/work"]
