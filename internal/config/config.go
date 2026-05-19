@@ -24,11 +24,14 @@ type ContextConfig struct {
 }
 
 // DefaultContextConfig returns sensible defaults for context lifecycle.
+// Byte thresholds are scaled to ~3 bytes/token observed in JSONL transcripts,
+// targeting 75/85/95% of the 1M-context window used by Opus 4.7 / Claude Max.
+// Override per-deployment in tgcc.toml [context] when running smaller models.
 func DefaultContextConfig() ContextConfig {
 	return ContextConfig{
-		SoftWarnBytes:     80000,
-		HardCompactBytes:  150000,
-		FreshRestartBytes: 300000,
+		SoftWarnBytes:     2250000,
+		HardCompactBytes:  2550000,
+		FreshRestartBytes: 2850000,
 		SoftWarnTurns:     60,
 		HardCompactTurns:  100,
 		IdleHibernateMin:  30,

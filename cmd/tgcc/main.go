@@ -351,9 +351,13 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	guard := acl.NewGuard(st, logger)
 	pairingMgr := acl.NewPairingManager(st)
 
+	// 7a. Honcho client — created before session.Manager so FreshRestart can
+	// persist transcripts to Honcho prior to archiving the dying session.
+	honchoClient := honcho.New(cfg.Honcho)
+
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
-	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots)
+	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, honchoClient, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots)
 
 	// 4c. Context lifecycle monitor (M6)
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
@@ -368,9 +372,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
-
-	// 7b. Honcho client
-	honchoClient := honcho.New(cfg.Honcho)
 
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
 	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)

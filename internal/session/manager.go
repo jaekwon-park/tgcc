@@ -15,6 +15,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
+	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/store"
 	"github.com/jaekwon-park/tgcc/internal/tmux"
 )
@@ -26,6 +27,7 @@ type Manager struct {
 	sm             *StateMachine
 	logger         *slog.Logger
 	sender         *bot.Sender
+	honchoClient   *honcho.HonchoClient
 	tmuxSession    string
 	claudeBin      string
 	workspaceRoot  string   // default root for /workspaces scanning
@@ -33,7 +35,7 @@ type Manager struct {
 }
 
 // NewManager creates a new session Manager.
-func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, tmuxSession, claudeBin, workspaceRoot string, workspaceRoots []string) *Manager {
+func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, honchoClient *honcho.HonchoClient, tmuxSession, claudeBin, workspaceRoot string, workspaceRoots []string) *Manager {
 	if workspaceRoot == "" {
 		homeDir, _ := os.UserHomeDir()
 		workspaceRoot = homeDir
@@ -44,6 +46,7 @@ func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sen
 		sm:             NewStateMachine(),
 		logger:         logger,
 		sender:         sender,
+		honchoClient:   honchoClient,
 		tmuxSession:    tmuxSession,
 		claudeBin:      claudeBin,
 		workspaceRoot:  workspaceRoot,
@@ -411,7 +414,12 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 		return nil, fmt.Errorf("session not found: %s", oldSessionID)
 	}
 
-	// 2. Archive the old session
+	// 2a. Persist the conversation to Honcho BEFORE archiving so the new Claude
+	// can recover long-term memory via BuildResumeContext on the next start.
+	// Best-effort: failure here must not block the restart path.
+	m.saveTranscriptToHoncho(ctx, oldSess)
+
+	// 2b. Archive the old session
 	now := store.CurrentTimeMs()
 	if err := m.store.ArchiveSession(oldSessionID, now); err != nil {
 		return nil, fmt.Errorf("archive session: %w", err)
@@ -495,6 +503,114 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	}
 
 	return newSess, nil
+}
+
+// saveTranscriptToHoncho writes the full assistant/user conversation from the
+// session's transcript to Honcho before the session is destroyed by
+// FreshRestart. The new Claude can then pull this back via
+// HonchoClient.BuildResumeContext on the next spawn.
+//
+// Best-effort: every error is logged at WARN and ignored — the restart path
+// must not block on Honcho availability. No-op when Honcho is disabled, the
+// topic lookup fails, the transcript is missing/empty, or the session has no
+// extractable text turns.
+func (m *Manager) saveTranscriptToHoncho(ctx context.Context, sess *store.Session) {
+	if m.honchoClient == nil || !m.honchoClient.IsEnabled() {
+		return
+	}
+	if sess == nil || sess.TranscriptPath == "" {
+		return
+	}
+
+	topic, err := m.store.TopicByID(sess.TopicID)
+	if err != nil || topic == nil {
+		m.logger.Warn("honcho pre-restart save: topic lookup failed",
+			"session_id", sess.ID, "topic_id", sess.TopicID, "error", err)
+		return
+	}
+	honchoSessionID := topic.HonchoSessionID()
+	if honchoSessionID == "" {
+		return
+	}
+
+	text, err := m.extractFullConversation(sess.TranscriptPath)
+	if err != nil {
+		m.logger.Warn("honcho pre-restart save: extract failed",
+			"session_id", sess.ID, "transcript", sess.TranscriptPath, "error", err)
+		return
+	}
+	if strings.TrimSpace(text) == "" {
+		return
+	}
+
+	saveCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	if err := m.honchoClient.CreateMessage(saveCtx, honchoSessionID, "user", text); err != nil {
+		m.logger.Warn("honcho pre-restart save: create message failed",
+			"session_id", sess.ID, "honcho_session", honchoSessionID, "error", err)
+		return
+	}
+	m.logger.Info("honcho pre-restart save: ok",
+		"session_id", sess.ID, "honcho_session", honchoSessionID, "bytes", len(text))
+}
+
+// extractFullConversation reads a JSONL transcript and returns every
+// user/assistant turn rendered as plain text. Used as the payload for
+// pre-restart Honcho persistence.
+func (m *Manager) extractFullConversation(transcriptPath string) (string, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return "", fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close()
+
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+
+	var sb strings.Builder
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var entry transcriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) == 0 {
+			continue
+		}
+		sb.WriteString(fmt.Sprintf("[%s]\n%s\n\n", entry.Type, strings.Join(parts, "\n")))
+	}
+	if err := scanner.Err(); err != nil {
+		return "", fmt.Errorf("scan transcript: %w", err)
+	}
+	return sb.String(), nil
 }
 
 // SummarizeLastNTurns reads a JSONL transcript and returns a simple text summary
