@@ -118,10 +118,10 @@
   3. workspace 확정 후:
      a. sessions INSERT (status=spawning)
      b. tmux new-window 실행
-     c. claude 프로세스 spawn
-     d. 5초 내 SessionStart hook 수신 대기
-  4. hook 수신 → status=active, "✅ ready" 송신
-  5. 타임아웃 → status=failed, "❌ failed (timeout)" 송신
+     c. claude 프로세스 spawn (tmux new-window)
+     d. 2초 sleep 후 status=active 로 전환 (fallback)
+  4. SessionStart hook 수신 시 correlation_id(cwd) 기반 매칭으로 claude_session_id 갱신
+  5. spawn 실패 시 status=failed
 ```
 
 **인라인 키보드 예시 (workspace 미지정):**
@@ -156,9 +156,9 @@
 동작:
   1. sessions 조회
   2. status=stopping 으로 변경
-  3. tmux send-keys "/exit\n" + 5초 대기
-  4. 정상 종료 시 status=stopped + tmux kill-window
-  5. 타임아웃 시 안내 "응답 없음, /kill로 강제 종료 가능"
+  3. tmux send-keys "/exit\n" + 5초 대기 (graceful 종료 유도)
+  4. 5초 후 tmux kill-window 즉시 실행
+  5. status=stopped
 ```
 
 #### 1.3.7 `/kill`
@@ -475,16 +475,14 @@ model             = "claude-sonnet-4-6"
 
 `127.0.0.1:47829` (hook 서버와 같은 포트 공유). 모든 엔드포인트는 `X-tgcc-Token` 헤더 필요.
 
+현재 구현된 엔드포인트만 명시.
+
 ### 4.1 엔드포인트
 
 | Method | Path | 응답 |
 |--------|------|------|
 | GET | `/healthz` | `{"status":"ok","uptime_seconds":...}` |
 | GET | `/sessions` | 세션 목록 JSON |
-| GET | `/sessions/{id}` | 단일 세션 상세 |
-| POST | `/sessions/{id}/kill` | 강제 종료 |
-| GET | `/audit?since=<ts>&limit=<n>` | 감사 로그 |
-| GET | `/metrics` | 간단한 카운터 (prometheus 형식, v0.2) |
 
 ### 4.2 응답 예시
 
@@ -509,32 +507,6 @@ model             = "claude-sonnet-4-6"
     }
   ],
   "total": 1
-}
-```
-
-#### `GET /audit?since=1747800000000&limit=50`
-
-```json
-{
-  "events": [
-    {
-      "id": 1024,
-      "timestamp": 1747900123456,
-      "actor_user_id": 11111111,
-      "event_type": "session.spawn",
-      "resource": "session:7a3f-...",
-      "detail": {"workspace":"/home/me/projects/api"}
-    },
-    {
-      "id": 1023,
-      "timestamp": 1747900000000,
-      "actor_user_id": 99999999,
-      "event_type": "auth.denied",
-      "resource": null,
-      "detail": {"reason":"unknown_user"}
-    }
-  ],
-  "next_since": 1747900123456
 }
 ```
 

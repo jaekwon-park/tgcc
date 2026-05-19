@@ -44,10 +44,7 @@ TELEGRAM_BOT_TOKEN=<@BotFather에서 발급>
 TGCC_HOOK_TOKEN=<자동 생성됨 — 변경 불필요>
 TGCC_LOG_LEVEL=info
 TGCC_HOOK_PORT=47829
-TGCC_ALLOWED_USERS=<허용할 텔레그램 user_id, 콤마 구분>  # 예: 123456789,987654321
 ```
-
-> `TGCC_ALLOWED_USERS`: 텔레그램 user_id 확인 방법 — [@userinfobot](https://t.me/userinfobot) 에 /start 전송
 
 ### 3. tgcc.toml 설정 (선택, 권장)
 

@@ -208,8 +208,23 @@ func (r *Router) handleStart(ctx context.Context, update bot.Update, user *store
 
 // handlePair responds to the /pair command.
 func (r *Router) handlePair(ctx context.Context, update bot.Update, user *store.User) error {
-	_ = user
 	if update.Message == nil || update.Message.From == nil || update.Message.Chat == nil {
+		return nil
+	}
+	if update.Message.Chat.Type != "private" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   update.Message.Chat.ID,
+			ThreadID: update.Message.MessageThreadID,
+			Text:     "❌ /pair 는 DM(1:1 채팅)에서만 사용할 수 있습니다.",
+		})
+		return nil
+	}
+	if user != nil && user.Role == "owner" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   update.Message.Chat.ID,
+			ThreadID: update.Message.MessageThreadID,
+			Text:     "이미 인증된 사용자입니다. /help 로 명령을 확인하세요.",
+		})
 		return nil
 	}
 	code, err := r.pairingMgr.GenerateCode(ctx, update.Message.From.ID)
