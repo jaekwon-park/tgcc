@@ -143,12 +143,47 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		return fmt.Errorf("get session: %w", err)
 	}
 	if sess == nil {
-		r.sender.Enqueue(bot.OutgoingMsg{
-			ChatID:   chat.ID,
-			ThreadID: threadID,
-			Text:     "이 토픽에 활성 세션이 없습니다. /new <workspace>로 시작하세요.",
-		})
-		return nil
+		// Auto-spawn when the topic has an auto-mapped workspace_path so the user
+		// doesn't have to type /new — covers both tgcc.toml-mapped topics and new
+		// topics that just went through autoRegisterTopic via ensureTopic above.
+		if topic.WorkspacePath == "" {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     "이 토픽에 활성 세션이 없습니다. /new <workspace>로 시작하세요.",
+			})
+			return nil
+		}
+		model := ""
+		if topic.ClaudeModel.Valid {
+			model = topic.ClaudeModel.String
+		}
+		spawned, err := r.mgr.Spawn(ctx, topic.ID, topic.WorkspacePath, chat.ID, threadID, model)
+		if err != nil {
+			r.logger.Error("auto-spawn failed", "error", err, "topic_id", topic.ID, "workspace", topic.WorkspacePath)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("❌ 세션 자동 생성 실패: %v\n/new <workspace>로 직접 시작하세요.", err),
+			})
+			return err
+		}
+		sess = spawned
+		// Spawn transitions spawning→active after ~2s in a goroutine. Poll until
+		// active so ForwardMessage below doesn't fail with "session not active".
+		deadline := time.Now().Add(5 * time.Second)
+		for time.Now().Before(deadline) {
+			s, gerr := r.store.SessionByID(sess.ID)
+			if gerr == nil && s != nil && s.Status == "active" {
+				sess = s
+				break
+			}
+			select {
+			case <-time.After(100 * time.Millisecond):
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
 	}
 
 	if sess.Status == "hibernated" {
