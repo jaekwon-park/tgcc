@@ -510,3 +510,106 @@ func truncateString(s string, maxLen int) string {
 	}
 	return s[:maxLen] + "..."
 }
+
+// SquashOldestNTurns reads a JSONL transcript, extracts the oldest N turns
+// (user+assistant pairs), and formats them as a text block for Honcho compression.
+// Returns: (oldestTurnsText, remainingRawLines, totalTurns, error)
+func (m *Manager) SquashOldestNTurns(transcriptPath string, n int) (string, []string, int, error) {
+	f, err := os.Open(transcriptPath)
+	if err != nil {
+		return "", nil, 0, fmt.Errorf("open transcript: %w", err)
+	}
+	defer f.Close()
+
+	type turn struct {
+		role    string
+		content string
+		rawLine string
+	}
+
+	var turns []turn
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 1024*1024), 10*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			continue
+		}
+		var msg struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+			continue
+		}
+		if msg.Role == "user" || msg.Role == "assistant" {
+			turns = append(turns, turn{role: msg.Role, content: msg.Content, rawLine: line})
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return "", nil, 0, fmt.Errorf("scan transcript: %w", err)
+	}
+
+	totalTurns := len(turns)
+	if totalTurns == 0 {
+		return "", nil, 0, nil
+	}
+	if n > totalTurns {
+		n = totalTurns
+	}
+
+	// Extract oldest N turns
+	oldest := turns[:n]
+	remaining := turns[n:]
+
+	// Format oldest turns as readable text for Honcho
+	var sb strings.Builder
+	sb.WriteString("다음은 이전 대화 기록입니다. 이 내용을 핵심만 간결하게 요약해주세요:\n\n")
+	for _, t := range oldest {
+		sb.WriteString(fmt.Sprintf("[%s]: %s\n\n", t.role, truncateString(t.content, 3000)))
+	}
+
+	// Collect remaining raw lines
+	remainingLines := make([]string, len(remaining))
+	for i, t := range remaining {
+		remainingLines[i] = t.rawLine
+	}
+
+	return sb.String(), remainingLines, totalTurns, nil
+}
+
+// WriteSquashedTranscript creates a new transcript file containing:
+// 1. The Honcho summary as a user message (prefixed with context marker)
+// 2. The remaining (newer) raw turns
+// Returns the path to the new transcript file.
+func (m *Manager) WriteSquashedTranscript(originalPath string, summary string, remainingLines []string) (string, error) {
+	newPath := originalPath + ".squashed"
+
+	f, err := os.Create(newPath)
+	if err != nil {
+		return "", fmt.Errorf("create squashed transcript: %w", err)
+	}
+	defer f.Close()
+
+	// Write Honcho summary as a user message (so Claude can see it as input)
+	summaryMsg := map[string]string{
+		"role":    "user",
+		"content": fmt.Sprintf("[이전 대화 요약]\n%s", summary),
+	}
+	summaryLine, err := json.Marshal(summaryMsg)
+	if err != nil {
+		return "", fmt.Errorf("marshal summary: %w", err)
+	}
+	if _, err := fmt.Fprintln(f, string(summaryLine)); err != nil {
+		return "", fmt.Errorf("write summary: %w", err)
+	}
+
+	// Write remaining raw turns
+	for _, line := range remainingLines {
+		if _, err := fmt.Fprintln(f, line); err != nil {
+			return "", fmt.Errorf("write remaining line: %w", err)
+		}
+	}
+
+	return newPath, nil
+}

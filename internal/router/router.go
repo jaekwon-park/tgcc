@@ -7,8 +7,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
@@ -20,11 +23,11 @@ import (
 
 // Router handles topic ↔ session mapping and message dispatch.
 type Router struct {
-	store      *store.Store
-	logger     *slog.Logger
-	sender     *bot.Sender
-	guard      *acl.Guard
-	pairingMgr *acl.PairingManager
+	store        *store.Store
+	logger       *slog.Logger
+	sender       *bot.Sender
+	guard        *acl.Guard
+	pairingMgr   *acl.PairingManager
 	mgr          *session.Manager
 	ctxMon       *tmuxctx.Monitor
 	honchoClient *honcho.HonchoClient
@@ -89,6 +92,13 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 		return r.handleCtxStatus(ctx, update, user)
 	case "/refresh":
 		return r.handleRefresh(ctx, update, user)
+	// M9 squash + override commands
+	case "/squash":
+		return r.handleSquash(ctx, update, user, fields)
+	case "/ctxconfig":
+		return r.handleCtxConfig(ctx, update, user, fields)
+	case "/list-archived":
+		return r.handleListArchived(ctx, update, user)
 	default:
 		r.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   update.Message.Chat.ID,
@@ -218,7 +228,7 @@ func (r *Router) handleHelp(ctx context.Context, update bot.Update, user *store.
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
-		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/refresh — 세션 새로고침 (아카이브 후 새 세션)\n/help — 도움말\n/whoami — 본인 정보",
+		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/refresh — 세션 새로고침 (아카이브 후 새 세션)\n/squash N — 오래된 N턴 압축 (Honcho 필요)\n/ctxconfig soft_warn=N hard_compact=N — 토픽별 컨텍스트 임계치 설정\n/list-archived — 아카이브된 세션 목록\n/help — 도움말\n/whoami — 본인 정보",
 	})
 	return nil
 }
@@ -748,7 +758,9 @@ func (r *Router) handleCtxStatus(ctx context.Context, update bot.Update, user *s
 		return nil
 	}
 
-	status := r.ctxMon.CtxStatus(ctx, sess.ID)
+	// Parse topic-level overrides if present
+	overrides, _ := tmuxctx.ParseOverrides(topic.ContextOverrides)
+	status := r.ctxMon.CtxStatusWithOverrides(ctx, sess.ID, overrides)
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,
 		ThreadID: threadID,
@@ -812,6 +824,329 @@ func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *sto
 		ChatID:   chat.ID,
 		ThreadID: threadID,
 		Text:     "🔄 세션 새로고침 완료",
+	})
+	return nil
+}
+
+// ============================================================================
+// M9 squash + override command handlers
+// ============================================================================
+
+// handleSquash processes /squash N — compress oldest N turns via Honcho and fresh restart.
+func (r *Router) handleSquash(ctx context.Context, update bot.Update, user *store.User, fields []string) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	// Parse N
+	if len(fields) < 2 {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "사용법: /squash N (N=압축할 턴 수)",
+		})
+		return nil
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil || n <= 0 {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "N은 1 이상의 정수여야 합니다.",
+		})
+		return nil
+	}
+
+	// Find topic + session
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	sess, err := r.mgr.GetSessionByTopic(topic.ID)
+	if err != nil || sess == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	if sess.TranscriptPath == "" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "트랜스크립트 파일이 없습니다. 세션이 너무 짧을 수 있습니다.",
+		})
+		return nil
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     fmt.Sprintf("🗜️ 가장 오래된 %d턴 압축 시작...", n),
+	})
+
+	// Extract oldest N turns
+	oldestTurns, remainingLines, totalTurns, err := r.mgr.SquashOldestNTurns(sess.TranscriptPath, n)
+	if err != nil {
+		r.logger.Error("squash: extract turns failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 트랜스크립트 추출 실패: %v", err),
+		})
+		return err
+	}
+
+	if totalTurns == 0 {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "압축할 턴이 없습니다.",
+		})
+		return nil
+	}
+
+	var summary string
+
+	// Try Honcho compression
+	if r.honchoClient != nil && r.honchoClient.IsEnabled() {
+		honchoSessionID := fmt.Sprintf("tgcc-squash-%s", uuid.New().String())
+		compressed, hErr := r.honchoClient.SummarizeTurns(ctx, honchoSessionID, oldestTurns)
+		if hErr != nil {
+			r.logger.Warn("squash: honcho summarization failed, using raw text", "error", hErr)
+			// Fallback: use the oldest turns text as-is
+			summary = oldestTurns
+		} else {
+			summary = compressed
+		}
+	} else {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "⚠️ Honcho 연동이 비활성화되어 있습니다. tgcc.toml에서 [honcho] enabled=true 설정이 필요합니다.\n원본 텍스트로 대체합니다.",
+		})
+		summary = oldestTurns
+	}
+
+	// Write squashed transcript
+	newPath, err := r.mgr.WriteSquashedTranscript(sess.TranscriptPath, summary, remainingLines)
+	if err != nil {
+		r.logger.Error("squash: write transcript failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 트랜스크립트 저장 실패: %v", err),
+		})
+		return err
+	}
+
+	// Update session transcript path
+	if err := r.store.UpdateSessionTranscriptPath(sess.ID, newPath); err != nil {
+		r.logger.Warn("squash: update transcript path failed", "error", err)
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     fmt.Sprintf("🗜️ 가장 오래된 %d턴 압축 완료\n전체 %d턴 → %d턴 보존", n, totalTurns, len(remainingLines)),
+	})
+
+	return nil
+}
+
+// handleCtxConfig processes /ctxconfig — set topic-level context threshold overrides.
+func (r *Router) handleCtxConfig(ctx context.Context, update bot.Update, user *store.User, fields []string) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽이 등록되지 않았습니다. /new <workspace>로 시작하세요.",
+		})
+		return nil
+	}
+
+	// Show current overrides if no args
+	if len(fields) < 2 {
+		if topic.ContextOverrides != "" {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("📊 현재 토픽 컨텍스트 설정:\n%s", topic.ContextOverrides),
+			})
+		} else {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     "📊 토픽별 오버라이드가 설정되지 않았습니다. 전역 기본값을 사용 중입니다.\n\n설정: /ctxconfig soft_warn=120000 hard_compact=200000\n초기화: /ctxconfig reset",
+			})
+		}
+		return nil
+	}
+
+	// Handle reset
+	if fields[1] == "reset" {
+		if err := r.store.UpdateTopicContextOverrides(topic.ID, ""); err != nil {
+			r.logger.Error("ctxconfig: reset failed", "error", err)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("❌ 초기화 실패: %v", err),
+			})
+			return err
+		}
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "✅ 컨텍스트 오버라이드 초기화 완료. 전역 기본값을 사용합니다.",
+		})
+		return nil
+	}
+
+	// Parse key=value pairs
+	overrides := &tmuxctx.ContextOverrides{}
+	for _, f := range fields[1:] {
+		parts := strings.SplitN(f, "=", 2)
+		if len(parts) != 2 {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("형식 오류: '%s'. key=value 형식으로 지정하세요.", f),
+			})
+			return nil
+		}
+		val, err := strconv.ParseInt(parts[1], 10, 64)
+		if err != nil || val <= 0 {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("값 오류: '%s'는 유효한 양의 정수가 아닙니다.", parts[1]),
+			})
+			return nil
+		}
+
+		switch parts[0] {
+		case "soft_warn":
+			overrides.SoftWarnBytes = &val
+		case "hard_compact":
+			overrides.HardCompactBytes = &val
+		default:
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("알 수 없는 키: '%s'. 사용 가능: soft_warn, hard_compact", parts[0]),
+			})
+			return nil
+		}
+	}
+
+	// Save to DB
+	jsonStr, err := overrides.ToJSON()
+	if err != nil {
+		r.logger.Error("ctxconfig: marshal failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 설정 저장 실패: %v", err),
+		})
+		return err
+	}
+
+	if err := r.store.UpdateTopicContextOverrides(topic.ID, jsonStr); err != nil {
+		r.logger.Error("ctxconfig: update failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 설정 저장 실패: %v", err),
+		})
+		return err
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     fmt.Sprintf("✅ 컨텍스트 오버라이드 설정 완료:\n%s", jsonStr),
+	})
+
+	return nil
+}
+
+// handleListArchived processes /list-archived — show archived sessions for this topic.
+func (r *Router) handleListArchived(ctx context.Context, update bot.Update, user *store.User) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 등록된 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	archived, err := r.store.ArchivedSessionsByTopic(topic.ID)
+	if err != nil {
+		r.logger.Error("list-archived: query failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 조회 실패: %v", err),
+		})
+		return nil
+	}
+
+	if len(archived) == 0 {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "📋 아카이브된 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("📋 아카이브된 세션 (%d개)\n\n", len(archived)))
+	for _, s := range archived {
+		sizeStr := "N/A"
+		if s.TranscriptBytes > 0 {
+			sizeStr = fmt.Sprintf("%d KB", s.TranscriptBytes/1024)
+		}
+		archivedAt := "unknown"
+		if s.ArchivedAt > 0 {
+			archivedAt = time.UnixMilli(s.ArchivedAt).Format("2006-01-02 15:04")
+		}
+		sb.WriteString(fmt.Sprintf("• %s  %s  %d턴  %s\n",
+			s.ID[:8], sizeStr, s.TurnCount, archivedAt))
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     sb.String(),
 	})
 	return nil
 }
