@@ -4,12 +4,13 @@ import "database/sql"
 
 // Topic represents a telegram forum topic.
 type Topic struct {
-	ID            int64
-	ChatID        int64
-	ThreadID      int64
-	Name          string
-	WorkspacePath string
-	CreatedAt     int64
+	ID               int64
+	ChatID           int64
+	ThreadID         int64
+	Name             string
+	WorkspacePath    string
+	ContextOverrides string
+	CreatedAt        int64
 }
 
 // Chat represents a registered telegram chat/group.
@@ -50,8 +51,8 @@ func (s *Store) ChatByID(chatID int64) (*Chat, error) {
 func (s *Store) InsertTopic(chatID int64, threadID int64, name string) (*Topic, error) {
 	now := CurrentTimeMs()
 	res, err := s.DB.Exec(
-		`INSERT INTO topics (chat_id, thread_id, name, workspace_path, created_at) VALUES (?, ?, ?, ?, ?)`,
-		chatID, threadID, name, nil, now,
+		`INSERT INTO topics (chat_id, thread_id, name, workspace_path, context_overrides, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		chatID, threadID, name, nil, nil, now,
 	)
 	if err != nil {
 		return nil, err
@@ -72,11 +73,12 @@ func (s *Store) InsertTopic(chatID int64, threadID int64, name string) (*Topic, 
 // TopicByChatThread returns a topic by chat_id and thread_id.
 func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) {
 	var workspace sql.NullString
+	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, context_overrides, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &ctxOverrides, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -85,6 +87,9 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	}
 	if workspace.Valid {
 		t.WorkspacePath = workspace.String
+	}
+	if ctxOverrides.Valid {
+		t.ContextOverrides = ctxOverrides.String
 	}
 	return t, nil
 }
@@ -92,11 +97,12 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 // TopicByID returns a topic by its internal ID.
 func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var workspace sql.NullString
+	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, context_overrides, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &ctxOverrides, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -106,11 +112,20 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	if workspace.Valid {
 		t.WorkspacePath = workspace.String
 	}
+	if ctxOverrides.Valid {
+		t.ContextOverrides = ctxOverrides.String
+	}
 	return t, nil
 }
 
 // UpdateTopicWorkspace sets the workspace_path for a topic.
 func (s *Store) UpdateTopicWorkspace(topicID int64, workspacePath string) error {
 	_, err := s.DB.Exec(`UPDATE topics SET workspace_path = ? WHERE id = ?`, workspacePath, topicID)
+	return err
+}
+
+// UpdateTopicContextOverrides sets the context_overrides JSON for a topic.
+func (s *Store) UpdateTopicContextOverrides(topicID int64, overridesJSON string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET context_overrides = ? WHERE id = ?`, nullString(overridesJSON), topicID)
 	return err
 }

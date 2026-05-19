@@ -192,13 +192,22 @@ func (m *Monitor) CompactSession(ctx context.Context, sessionID string, chatID, 
 }
 
 // CtxStatus returns a Korean-formatted context status string for the given session.
+// Uses global config thresholds. For topic-specific thresholds, use CtxStatusWithOverrides.
 func (m *Monitor) CtxStatus(ctx context.Context, sessionID string) string {
+	return m.CtxStatusWithOverrides(ctx, sessionID, nil)
+}
+
+// CtxStatusWithOverrides returns a context status string using topic-level overrides
+// when provided. Overrides are merged on top of global config.
+func (m *Monitor) CtxStatusWithOverrides(ctx context.Context, sessionID string, overrides *ContextOverrides) string {
 	session, err := m.store.SessionByID(sessionID)
 	if err != nil || session == nil {
 		return "세션을 찾을 수 없습니다."
 	}
 
-	softOK := session.TranscriptBytes < m.cfg.SoftWarnBytes && session.TurnCount < m.cfg.SoftWarnTurns
+	cfg := MergeWithGlobal(overrides, m.cfg)
+
+	softOK := session.TranscriptBytes < cfg.SoftWarnBytes && session.TurnCount < cfg.SoftWarnTurns
 	softIcon := "✅"
 	softLabel := "통과"
 	if !softOK {
@@ -206,16 +215,22 @@ func (m *Monitor) CtxStatus(ctx context.Context, sessionID string) string {
 		softLabel = "초과"
 	}
 
-	hardCompactKB := m.cfg.HardCompactBytes / 1024
-	softWarnKB := m.cfg.SoftWarnBytes / 1024
+	hardCompactKB := cfg.HardCompactBytes / 1024
+	softWarnKB := cfg.SoftWarnBytes / 1024
 	sizeKB := session.TranscriptBytes / 1024
 
+	overrideNote := ""
+	if overrides != nil {
+		overrideNote = "\n⚠️ 토픽별 오버라이드 적용 중"
+	}
+
 	return fmt.Sprintf(
-		"📊 컨텍스트 상태\n턴 수: %d / %d (자동 compact)\n크기: %d KB / %d KB (자동 compact)\n경고선: %s soft warn %s (%d KB)\ncompact 횟수: %d",
-		session.TurnCount, m.cfg.HardCompactTurns,
+		"📊 컨텍스트 상태\n턴 수: %d / %d (자동 compact)\n크기: %d KB / %d KB (자동 compact)\n경고선: %s soft warn %s (%d KB)\ncompact 횟수: %d%s",
+		session.TurnCount, cfg.HardCompactTurns,
 		sizeKB, hardCompactKB,
 		softIcon, softLabel, softWarnKB,
 		session.CompactCount,
+		overrideNote,
 	)
 }
 

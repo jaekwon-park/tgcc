@@ -3,6 +3,7 @@
 package honcho
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -44,9 +45,9 @@ func New(cfg HonchoConfig) *HonchoClient {
 		return nil
 	}
 	return &HonchoClient{
-		baseURL:   strings.TrimRight(cfg.BaseURL, "/"),
-		workspace: cfg.Workspace,
-		enabled:   true,
+		baseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		workspace:  cfg.Workspace,
+		enabled:    true,
 		httpClient: &http.Client{},
 	}
 }
@@ -110,6 +111,57 @@ func (c *HonchoClient) BuildResumeContext(ctx context.Context, sessionID string,
 	}
 
 	return fmt.Sprintf("[Honcho Memory]\n%s\n\n[Recent Conversation]\n%s", memory, summary)
+}
+
+// CreateMessage sends a user message to a Honcho session for dialectic processing.
+// POST /v3/workspaces/{workspace}/sessions/{sessionID}/messages/create
+func (c *HonchoClient) CreateMessage(ctx context.Context, sessionID, role, content string) error {
+	url := fmt.Sprintf("%s/v3/workspaces/%s/sessions/%s/messages/create", c.baseURL, c.workspace, sessionID)
+
+	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	body := map[string]string{"role": role, "content": content}
+	jsonBody, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("honcho: marshal message: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, url, bytes.NewReader(jsonBody))
+	if err != nil {
+		return fmt.Errorf("honcho: create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("honcho: message create failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("honcho: message create status %d: %s", resp.StatusCode, string(bodyBytes))
+	}
+	return nil
+}
+
+// SummarizeTurns sends a batch of conversation turns to a Honcho session
+// for dialectic compression and returns the resulting context representation.
+// sessionID should be a unique ID for this compression session.
+func (c *HonchoClient) SummarizeTurns(ctx context.Context, sessionID, turnsText string) (string, error) {
+	// Send the turns as a user message for dialectic processing
+	if err := c.CreateMessage(ctx, sessionID, "user", turnsText); err != nil {
+		return "", fmt.Errorf("honcho: send turns for summarization: %w", err)
+	}
+
+	// Retrieve the compressed context representation
+	representation, err := c.GetRepresentation(ctx, sessionID)
+	if err != nil {
+		return "", fmt.Errorf("honcho: get summary representation: %w", err)
+	}
+
+	return representation, nil
 }
 
 // contextResponse is the expected JSON shape from Honcho's /context endpoint.

@@ -169,6 +169,33 @@ func (s *Store) UpdateSessionTranscriptPath(id string, path string) error {
 	return err
 }
 
+// ArchivedSessionsByTopic returns all archived sessions (archived_at IS NOT NULL) for a given topic.
+func (s *Store) ArchivedSessionsByTopic(topicID int64) ([]*Session, error) {
+	rows, err := s.DB.Query(
+		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at,
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		FROM sessions WHERE topic_id = ? AND archived_at IS NOT NULL ORDER BY archived_at DESC`,
+		topicID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []*Session
+	for rows.Next() {
+		session, err := scanSession(rows.Scan)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, session)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return sessions, nil
+}
+
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	return err
