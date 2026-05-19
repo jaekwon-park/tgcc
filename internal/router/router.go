@@ -13,6 +13,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
+	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
 )
@@ -24,13 +25,14 @@ type Router struct {
 	sender     *bot.Sender
 	guard      *acl.Guard
 	pairingMgr *acl.PairingManager
-	mgr        *session.Manager
-	ctxMon     *tmuxctx.Monitor
+	mgr          *session.Manager
+	ctxMon       *tmuxctx.Monitor
+	honchoClient *honcho.HonchoClient
 }
 
 // NewRouter creates a new Router.
-func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor) *Router {
-	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon}
+func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient) *Router {
+	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient}
 }
 
 // Route dispatches an incoming message from an allowed user to the appropriate handler.
@@ -141,6 +143,8 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		if sess.TranscriptPath != "" {
 			summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
 		}
+		honchoSessionID := fmt.Sprintf("tgcc-topic-%d", topic.ID)
+		summary = r.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 		if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chat.ID, threadID); err != nil {
 			r.logger.Error("hibernate recovery failed", "error", err)
 			r.sender.Enqueue(bot.OutgoingMsg{
@@ -785,6 +789,8 @@ func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *sto
 	if sess.TranscriptPath != "" {
 		summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
 	}
+	honchoSessionID := fmt.Sprintf("tgcc-topic-%d", topic.ID)
+	summary = r.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,

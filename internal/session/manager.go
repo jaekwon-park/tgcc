@@ -432,10 +432,14 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 
 	// 7. Send notification
 	if chatID > 0 && threadID > 0 {
+		notifyText := "🔄 fresh session — 마지막 10턴 요약만 복구 (transcript 너무 큼)"
+		if strings.HasPrefix(summary, "[Honcho Memory]") {
+			notifyText = "🔄 fresh session + Honcho 메모리 복구"
+		}
 		m.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   chatID,
 			ThreadID: threadID,
-			Text:     "🔄 fresh session — 마지막 10턴 요약만 복구 (transcript 너무 큼)",
+			Text:     notifyText,
 		})
 	}
 

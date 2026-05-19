@@ -24,6 +24,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/config"
 	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
 	"github.com/jaekwon-park/tgcc/internal/hook"
+	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/router"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -314,12 +315,15 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
 
-	// 7b. Supervisor (M3) — restart crashed sessions periodically
-	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender)
+	// 7b. Honcho client
+	honchoClient := honcho.New(cfg.Honcho)
+
+	// 7c. Supervisor (M3) — restart crashed sessions periodically
+	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient)
 	go supervisor.Start(ctx)
 
 	// 8. Router
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon)
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)
