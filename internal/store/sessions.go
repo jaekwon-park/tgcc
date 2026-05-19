@@ -201,6 +201,31 @@ func (s *Store) DeleteSession(id string) error {
 	return err
 }
 
+// SessionByWorkspaceAndStatus returns the first non-archived session matching
+// the given workspace path and one of the given statuses.
+func (s *Store) SessionByWorkspaceAndStatus(workspacePath string, statuses []string) (*Session, error) {
+	if len(statuses) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(statuses))
+	args := make([]interface{}, len(statuses)+1)
+	args[0] = workspacePath
+	for i, status := range statuses {
+		placeholders[i] = "?"
+		args[i+1] = status
+	}
+	query := "SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at FROM sessions WHERE workspace_path = ? AND status IN (" + strings.Join(placeholders, ",") + ") AND archived_at IS NULL LIMIT 1"
+	row := s.DB.QueryRow(query, args...)
+	session, err := scanSession(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
 func scanSession(scan func(dest ...interface{}) error) (*Session, error) {
 	session := &Session{}
 	var claudeSessionID sql.NullString
