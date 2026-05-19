@@ -413,7 +413,7 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 
 	// 5. Spawn tmux window with fresh claude
 	var freshModel string
-	if topic, err2 := m.store.TopicByChatThread(chatID, threadID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
+	if topic, err2 := m.store.TopicByID(oldSess.TopicID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
 		freshModel = topic.ClaudeModel.String
 	}
 	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin, freshModel)
