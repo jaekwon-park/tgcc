@@ -15,12 +15,12 @@ import (
 
 // ContextConfig holds context lifecycle thresholds.
 type ContextConfig struct {
-	SoftWarnBytes      int64 `toml:"soft_warn_bytes"`
-	HardCompactBytes   int64 `toml:"hard_compact_bytes"`
-	FreshRestartBytes  int64 `toml:"fresh_restart_bytes"`
-	SoftWarnTurns      int64 `toml:"soft_warn_turns"`
-	HardCompactTurns   int64 `toml:"hard_compact_turns"`
-	IdleHibernateMin   int64 `toml:"idle_hibernate_min"`
+	SoftWarnBytes     int64 `toml:"soft_warn_bytes"`
+	HardCompactBytes  int64 `toml:"hard_compact_bytes"`
+	FreshRestartBytes int64 `toml:"fresh_restart_bytes"`
+	SoftWarnTurns     int64 `toml:"soft_warn_turns"`
+	HardCompactTurns  int64 `toml:"hard_compact_turns"`
+	IdleHibernateMin  int64 `toml:"idle_hibernate_min"`
 }
 
 // DefaultContextConfig returns sensible defaults for context lifecycle.
@@ -58,12 +58,12 @@ type Config struct {
 	TelegramBotToken string
 
 	// Optional with defaults
-	DBPath      string
-	HookPort    int
-	HookToken   string
-	LogLevel    string
-	TmuxBin     string
-	ClaudeBin   string
+	DBPath       string
+	HookPort     int
+	HookToken    string
+	LogLevel     string
+	TmuxBin      string
+	ClaudeBin    string
 	TmuxSession  string
 	TgccTomlPath string
 
@@ -289,6 +289,7 @@ type TopicConfig struct {
 // GroupConfig represents a single [[group]] entry in tgcc.toml.
 type GroupConfig struct {
 	ChatID int64         `toml:"chat_id"`
+	Name   string        `toml:"name"` // 워크스페이스 경로용 (예: "ccgram")
 	Topics []TopicConfig `toml:"topic"`
 }
 

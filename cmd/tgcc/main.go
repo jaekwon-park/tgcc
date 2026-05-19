@@ -255,22 +255,26 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// Sync topics from tgcc.toml
 	tomlCfg, tomlErr := config.LoadTgccToml(cfg.TgccTomlPath)
+	var groupConfigs []config.GroupConfig
 	if tomlErr != nil {
 		logger.Warn("failed to load tgcc.toml, skipping topic sync", "error", tomlErr)
-	} else if tomlCfg != nil && len(tomlCfg.Groups) > 0 {
-		synced := 0
-		for _, g := range tomlCfg.Groups {
-			for _, tc := range g.Topics {
-				topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
-				if err != nil {
-					logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
-					continue
+	} else if tomlCfg != nil {
+		groupConfigs = tomlCfg.Groups
+		if len(tomlCfg.Groups) > 0 {
+			synced := 0
+			for _, g := range tomlCfg.Groups {
+				for _, tc := range g.Topics {
+					topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, "", tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
+					if err != nil {
+						logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
+						continue
+					}
+					synced++
+					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
 				}
-				synced++
-				logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
 			}
+			logger.Info("tgcc.toml topic sync complete", "synced", synced)
 		}
-		logger.Info("tgcc.toml topic sync complete", "synced", synced)
 	}
 
 	// 2. Set defaults
@@ -344,7 +348,8 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	go supervisor.Start(ctx)
 
 	// 8. Router
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient)
+	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)
