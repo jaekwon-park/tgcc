@@ -659,9 +659,8 @@ func (r *Router) handleList(ctx context.Context, update bot.Update, user *store.
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%s %s  %s  %s\n",
-			icon, s.ID[:8], s.Status, filepath.Base(s.WorkspacePath)))
-		_ = topicName
+		sb.WriteString(fmt.Sprintf("%s %s  %s  %s  %s\n",
+			icon, topicName, s.Status, filepath.Base(s.WorkspacePath), s.ID[:8]))
 	}
 
 	r.sender.Enqueue(bot.OutgoingMsg{

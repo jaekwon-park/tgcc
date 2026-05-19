@@ -65,6 +65,15 @@ func (s *Supervisor) recover(ctx context.Context) {
 
 	for _, sess := range sessions {
 		if sess.TranscriptBytes < s.cfg.FreshRestartBytes && sess.TurnCount < 100 {
+			// Look up topic for notification
+			topic, terr := s.store.TopicByID(sess.TopicID)
+			if terr == nil && topic != nil && s.sender != nil {
+				s.sender.Enqueue(bot.OutgoingMsg{
+					ChatID:   topic.ChatID,
+					ThreadID: topic.ThreadID,
+					Text:     "⚠️ 세션이 중단되었습니다. 복구 중...",
+				})
+			}
 			s.logger.Info("supervisor: resuming crashed session", "session_id", sess.ID)
 			if err := s.store.UpdateSessionStatus(sess.ID, "resuming"); err != nil {
 				s.logger.Error("supervisor: set resuming failed", "session_id", sess.ID, "err", err)

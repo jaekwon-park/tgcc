@@ -276,14 +276,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		logger.Warn("could not ensure tmux session exists", "error", err)
 	}
 
-	// 4. Reconciler + Supervisor (M3)
-	reconciler := session.NewReconciler(st, tmuxAdapter)
-	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
-		logger.Warn("reconciler run failed", "error", err)
-	}
-	_ = tmux.NewParser()
-
-	// 5. Bot client & sender
+	// 5. Bot client & sender (moved before reconciler so crash notifications fire at startup)
 	client := bot.NewClient(cfg.TelegramBotToken)
 	sender := bot.NewSender(client, logger)
 	go func() {
@@ -292,19 +285,26 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}()
 
+	// 4. Reconciler + Supervisor (M3)
+	reconciler := session.NewReconciler(st, tmuxAdapter, sender)
+	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
+		logger.Warn("reconciler run failed", "error", err)
+	}
+	_ = tmux.NewParser()
+
 	// 6. ACL & pairing
 	guard := acl.NewGuard(st, logger)
 	pairingMgr := acl.NewPairingManager(st)
 
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
-	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot)
+	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots)
 
 	// 4c. Context lifecycle monitor (M6)
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
 
 	// 4b. Hook server — internal HTTP API + Claude Code hook receiver
-	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger, ctxMon)
+	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger, st, sender, ctxMon)
 	go func() {
 		if err := hookSrv.Start(ctx); err != nil {
 			logger.Error("hook server failed", "error", err)

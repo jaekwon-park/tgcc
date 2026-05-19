@@ -21,31 +21,33 @@ import (
 
 // Manager handles spawn/kill/resume of Claude Code sessions.
 type Manager struct {
-	store         *store.Store
-	adapter       *tmux.Adapter
-	sm            *StateMachine
-	logger        *slog.Logger
-	sender        *bot.Sender
-	tmuxSession   string
-	claudeBin     string
-	workspaceRoot string // default root for /workspaces scanning
+	store          *store.Store
+	adapter        *tmux.Adapter
+	sm             *StateMachine
+	logger         *slog.Logger
+	sender         *bot.Sender
+	tmuxSession    string
+	claudeBin      string
+	workspaceRoot  string   // default root for /workspaces scanning
+	workspaceRoots []string // from tgcc.toml workspace.roots
 }
 
 // NewManager creates a new session Manager.
-func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, tmuxSession, claudeBin, workspaceRoot string) *Manager {
+func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, tmuxSession, claudeBin, workspaceRoot string, workspaceRoots []string) *Manager {
 	if workspaceRoot == "" {
 		homeDir, _ := os.UserHomeDir()
 		workspaceRoot = homeDir
 	}
 	return &Manager{
-		store:         st,
-		adapter:       adapter,
-		sm:            NewStateMachine(),
-		logger:        logger,
-		sender:        sender,
-		tmuxSession:   tmuxSession,
-		claudeBin:     claudeBin,
-		workspaceRoot: workspaceRoot,
+		store:          st,
+		adapter:        adapter,
+		sm:             NewStateMachine(),
+		logger:         logger,
+		sender:         sender,
+		tmuxSession:    tmuxSession,
+		claudeBin:      claudeBin,
+		workspaceRoot:  workspaceRoot,
+		workspaceRoots: workspaceRoots,
 	}
 }
 
@@ -323,20 +325,26 @@ func (m *Manager) ListActiveSessions(ctx context.Context) ([]*store.Session, err
 	return m.store.ActiveSessions(activeStatuses)
 }
 
-// ListWorkspaces scans workspaceRoot for available directories.
-// TODO: use tgcc.toml workspace.roots when TOML parsing is implemented.
+// ListWorkspaces scans workspace roots for available directories.
 func (m *Manager) ListWorkspaces() ([]string, error) {
-	entries, err := os.ReadDir(m.workspaceRoot)
-	if err != nil {
-		return nil, fmt.Errorf("read workspace root %s: %w", m.workspaceRoot, err)
+	roots := m.workspaceRoots
+	if len(roots) == 0 {
+		roots = []string{m.workspaceRoot}
 	}
 
 	dirs := make([]string, 0)
-	for _, entry := range entries {
-		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			m.logger.Warn("read workspace root failed, skipping", "root", root, "error", err)
 			continue
 		}
-		dirs = append(dirs, filepath.Join(m.workspaceRoot, entry.Name()))
+		for _, entry := range entries {
+			if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
+				continue
+			}
+			dirs = append(dirs, filepath.Join(root, entry.Name()))
+		}
 	}
 	return dirs, nil
 }

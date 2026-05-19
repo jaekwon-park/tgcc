@@ -35,6 +35,23 @@ func DefaultContextConfig() ContextConfig {
 	}
 }
 
+// TmuxConfig holds tmux-related configuration from tgcc.toml.
+type TmuxConfig struct {
+	SessionName string `toml:"session_name"`
+	Bin         string `toml:"bin"`
+}
+
+// ClaudeConfig holds claude binary configuration from tgcc.toml.
+type ClaudeConfig struct {
+	Bin          string `toml:"bin"`
+	SpawnTimeout int    `toml:"spawn_timeout"`
+}
+
+// WorkspaceConfig holds workspace scanning configuration from tgcc.toml.
+type WorkspaceConfig struct {
+	Roots []string `toml:"roots"`
+}
+
 // Config holds all tgcc configuration values.
 type Config struct {
 	// Required
@@ -58,12 +75,20 @@ type Config struct {
 
 	// Honcho integration
 	Honcho honcho.HonchoConfig
+
+	// TOML sections
+	Tmux      TmuxConfig
+	Claude    ClaudeConfig
+	Workspace WorkspaceConfig
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
 type tomlFile struct {
-	Context ContextConfig      `toml:"context"`
-	Honcho  honcho.HonchoConfig `toml:"honcho"`
+	Context   ContextConfig       `toml:"context"`
+	Honcho    honcho.HonchoConfig `toml:"honcho"`
+	Tmux      TmuxConfig          `toml:"tmux"`
+	Claude    ClaudeConfig        `toml:"claude"`
+	Workspace WorkspaceConfig     `toml:"workspace"`
 }
 
 // Load reads .env from ~/.tgcc/.env and returns parsed Config.
@@ -118,6 +143,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("could not load tgcc.toml: %w", err)
 	}
 
+	// Apply TOML fallbacks for fields that can come from env or TOML
+	// Priority: env > toml > hardcoded default
+	if cfg.Tmux.SessionName != "" && cfg.TmuxSession == "" {
+		cfg.TmuxSession = cfg.Tmux.SessionName
+	}
+	if cfg.Tmux.Bin != "" && cfg.TmuxBin == "tmux" {
+		cfg.TmuxBin = cfg.Tmux.Bin
+	}
+	if cfg.Claude.Bin != "" && cfg.ClaudeBin == "claude" {
+		cfg.ClaudeBin = cfg.Claude.Bin
+	}
+	if cfg.Claude.SpawnTimeout == 0 {
+		cfg.Claude.SpawnTimeout = 30
+	}
+
 	return cfg, nil
 }
 
@@ -164,6 +204,24 @@ func loadTOML(path string, cfg *Config) error {
 	}
 	if tf.Honcho.Workspace != "" {
 		cfg.Honcho.Workspace = tf.Honcho.Workspace
+	}
+	// Merge Tmux
+	if tf.Tmux.SessionName != "" {
+		cfg.Tmux.SessionName = tf.Tmux.SessionName
+	}
+	if tf.Tmux.Bin != "" {
+		cfg.Tmux.Bin = tf.Tmux.Bin
+	}
+	// Merge Claude
+	if tf.Claude.Bin != "" {
+		cfg.Claude.Bin = tf.Claude.Bin
+	}
+	if tf.Claude.SpawnTimeout > 0 {
+		cfg.Claude.SpawnTimeout = tf.Claude.SpawnTimeout
+	}
+	// Merge Workspace
+	if len(tf.Workspace.Roots) > 0 {
+		cfg.Workspace.Roots = tf.Workspace.Roots
 	}
 	return nil
 }
