@@ -12,15 +12,16 @@ import (
 type Status string
 
 const (
-	StatusPending  Status = "pending"
-	StatusSpawning Status = "spawning"
-	StatusActive   Status = "active"
-	StatusIdle     Status = "idle"
-	StatusCrashed  Status = "crashed"
-	StatusResuming Status = "resuming"
-	StatusStopping Status = "stopping"
-	StatusStopped  Status = "stopped"
-	StatusFailed   Status = "failed"
+	StatusPending    Status = "pending"
+	StatusSpawning   Status = "spawning"
+	StatusActive     Status = "active"
+	StatusIdle       Status = "idle"
+	StatusCompacting Status = "compacting"
+	StatusCrashed    Status = "crashed"
+	StatusResuming   Status = "resuming"
+	StatusStopping   Status = "stopping"
+	StatusStopped    Status = "stopped"
+	StatusFailed     Status = "failed"
 )
 
 // SideEffect is an optional function executed when a state transition occurs.
@@ -51,10 +52,16 @@ func NewStateMachine() *StateMachine {
 	sm.allow(StatusActive, StatusIdle)
 	sm.allow(StatusActive, StatusCrashed)
 	sm.allow(StatusActive, StatusStopping)
+	sm.allow(StatusActive, StatusCompacting)
 
 	sm.allow(StatusIdle, StatusActive)
 	sm.allow(StatusIdle, StatusCrashed)
 	sm.allow(StatusIdle, StatusStopping)
+	sm.allow(StatusIdle, StatusCompacting)
+
+	sm.allow(StatusCompacting, StatusActive)
+	sm.allow(StatusCompacting, StatusIdle)
+	sm.allow(StatusCompacting, StatusStopping)
 
 	sm.allow(StatusCrashed, StatusResuming)
 	sm.allow(StatusCrashed, StatusStopping)
@@ -120,7 +127,7 @@ func (sm *StateMachine) IsTerminal(s Status) bool {
 // IsActive returns true if the session is in a running state that should be monitored.
 func (sm *StateMachine) IsActive(s Status) bool {
 	switch s {
-	case StatusActive, StatusIdle, StatusPending, StatusSpawning, StatusResuming:
+	case StatusActive, StatusIdle, StatusCompacting, StatusPending, StatusSpawning, StatusResuming:
 		return true
 	default:
 		return false

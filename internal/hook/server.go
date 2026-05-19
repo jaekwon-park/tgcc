@@ -36,13 +36,13 @@ type Server struct {
 }
 
 // NewServer creates a new hook Server.
-func NewServer(port int, token string, logger *slog.Logger) *Server {
+func NewServer(port int, token string, logger *slog.Logger, monitor ContextMonitor) *Server {
 	s := &Server{
 		port:      port,
 		token:     token,
 		logger:    logger,
 		startTime: time.Now(),
-		handlers:  NewHandlers(logger),
+		handlers:  NewHandlers(logger, monitor),
 	}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("/healthz", s.handleHealthz)

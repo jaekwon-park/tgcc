@@ -8,7 +8,31 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
+
+// ContextConfig holds context lifecycle thresholds.
+type ContextConfig struct {
+	SoftWarnBytes      int64 `toml:"soft_warn_bytes"`
+	HardCompactBytes   int64 `toml:"hard_compact_bytes"`
+	FreshRestartBytes  int64 `toml:"fresh_restart_bytes"`
+	SoftWarnTurns      int64 `toml:"soft_warn_turns"`
+	HardCompactTurns   int64 `toml:"hard_compact_turns"`
+	IdleHibernateMin   int64 `toml:"idle_hibernate_min"`
+}
+
+// DefaultContextConfig returns sensible defaults for context lifecycle.
+func DefaultContextConfig() ContextConfig {
+	return ContextConfig{
+		SoftWarnBytes:     80000,
+		HardCompactBytes:  150000,
+		FreshRestartBytes: 300000,
+		SoftWarnTurns:     60,
+		HardCompactTurns:  100,
+		IdleHibernateMin:  30,
+	}
+}
 
 // Config holds all tgcc configuration values.
 type Config struct {
@@ -27,6 +51,14 @@ type Config struct {
 	// Derived
 	HomeDir string
 	TgccDir string
+
+	// Context lifecycle thresholds
+	Context ContextConfig
+}
+
+// tomlFile is the on-disk representation of tgcc.toml.
+type tomlFile struct {
+	Context ContextConfig `toml:"context"`
 }
 
 // Load reads .env from ~/.tgcc/.env and returns parsed Config.
@@ -72,8 +104,51 @@ func Load() (*Config, error) {
 		TmuxSession:      getEnvOrDefault(m, "TGCC_TMUX_SESSION", ""),
 		HomeDir:          homeDir,
 		TgccDir:          tgccDir,
+		Context:          DefaultContextConfig(),
 	}
+
+	tomlPath := filepath.Join(tgccDir, "tgcc.toml")
+	if err := loadTOML(tomlPath, cfg); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("could not load tgcc.toml: %w", err)
+	}
+
 	return cfg, nil
+}
+
+// loadTOML reads tgcc.toml and merges the [context] section into cfg.
+// Returns os.ErrNotExist if the file does not exist.
+func loadTOML(path string, cfg *Config) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	var tf tomlFile
+	if _, err := toml.NewDecoder(f).Decode(&tf); err != nil {
+		return fmt.Errorf("parse toml: %w", err)
+	}
+
+	// Merge only non-zero values so unset fields keep their defaults.
+	if tf.Context.SoftWarnBytes > 0 {
+		cfg.Context.SoftWarnBytes = tf.Context.SoftWarnBytes
+	}
+	if tf.Context.HardCompactBytes > 0 {
+		cfg.Context.HardCompactBytes = tf.Context.HardCompactBytes
+	}
+	if tf.Context.FreshRestartBytes > 0 {
+		cfg.Context.FreshRestartBytes = tf.Context.FreshRestartBytes
+	}
+	if tf.Context.SoftWarnTurns > 0 {
+		cfg.Context.SoftWarnTurns = tf.Context.SoftWarnTurns
+	}
+	if tf.Context.HardCompactTurns > 0 {
+		cfg.Context.HardCompactTurns = tf.Context.HardCompactTurns
+	}
+	if tf.Context.IdleHibernateMin > 0 {
+		cfg.Context.IdleHibernateMin = tf.Context.IdleHibernateMin
+	}
+	return nil
 }
 
 // ensureDir creates a directory if it doesn't exist.
