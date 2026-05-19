@@ -224,6 +224,7 @@ make clean          # 빌드 아티팩트 삭제
 | [docs/02_ARCHITECTURE.md](./docs/02_ARCHITECTURE.md) | 시스템 다이어그램, ACL 모델, 상태 머신, SQLite 스키마 |
 | [docs/03_API.md](./docs/03_API.md) | 봇 커맨드, Hook 인터페이스, CLI, 내부 HTTP API |
 | [docs/04_HONCHO.md](./docs/04_HONCHO.md) | Honcho 메모리 통합 (토픽별 격리) |
+| [docs/05_CONTEXT_LIFECYCLE.md](./docs/05_CONTEXT_LIFECYCLE.md) | 컨텍스트 누적 완화 정책 (compact / fresh / hibernate) |
 
 ## 마일스톤
 
@@ -234,6 +235,40 @@ make clean          # 빌드 아티팩트 삭제
 - **M5** (0.5주): 빌드·문서·릴리스 ✅
 - **v0.2** (1.5주): Honcho 통합 (자체 호스팅, 토픽 격리)
 - **v0.3+**: TUI 대시보드, 권한 승인 UI, 파일 첨부
+
+## 브랜치 전략
+
+```
+main  ──────────────────────────────────────→ (운영 기준)
+  │                               ↑
+  │  hotfix/*                     │ devel → main PR (안정화 시점)
+  │                               │
+  └──→ feature/* ──── PR ──→ devel
+```
+
+| 브랜치 | 규칙 |
+|--------|------|
+| `main` | 직접 push 금지. devel 안정화 후 리더가 PR 머지 |
+| `devel` | 직접 push 금지. 모든 feature/hotfix PR의 타겟 브랜치 |
+| `feature/*` | `main` 기준 체크아웃. 브랜치명: `feature/{작업자}/{요약}` (영문, 소문자, 하이픈) |
+| `hotfix/*` | `main` 기준 체크아웃. `devel` + `main` 동시 PR |
+
+```bash
+# feature 브랜치 생성 예시
+git fetch origin
+git checkout -b feature/backend-go/m1-skeleton origin/main
+
+# 작업 완료 후 PR (devel 대상)
+git push origin feature/backend-go/m1-skeleton
+gh pr create --base devel --title "feat: ..."
+```
+
+> PR은 `qa-agent`가 생성하고, 리더만 승인/머지한다.
+> `main`, `devel` 브랜치 직접 push 금지.
+
+## 기여
+
+설계 문서 리뷰·이슈 환영. PR은 반드시 `devel` 대상으로 생성.
 
 ## 라이선스
 
