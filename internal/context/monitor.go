@@ -48,13 +48,22 @@ func NewMonitor(st *store.Store, tx *tmux.Adapter, sender *bot.Sender, cfg confi
 
 // OnStopHook is called by the Claude Code stop hook after each turn.
 // It updates context stats and checks thresholds.
-func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath string, chatID, threadID int64) error {
+func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath string) error {
 	session, err := m.store.SessionByID(sessionID)
 	if err != nil {
 		return fmt.Errorf("look up session %s: %w", sessionID, err)
 	}
 	if session == nil {
 		return fmt.Errorf("session %s not found", sessionID)
+	}
+
+	var chatID, threadID int64
+	topic, err := m.store.TopicByID(session.TopicID)
+	if err != nil {
+		m.logger.Warn("look up topic failed", "topic_id", session.TopicID, "error", err)
+	} else if topic != nil {
+		chatID = topic.ChatID
+		threadID = topic.ThreadID
 	}
 
 	fi, err := os.Stat(transcriptPath)
@@ -94,6 +103,10 @@ func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath stri
 	}
 
 	m.checkThresholds(ctx, session, chatID, threadID)
+
+	if err := RelayResponse(ctx, m.store, m.sender, m.logger, sessionID, transcriptPath); err != nil {
+		m.logger.Warn("relay response failed", "session_id", sessionID, "error", err)
+	}
 	return nil
 }
 

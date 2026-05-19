@@ -333,8 +333,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
 		logger.Warn("reconciler run failed", "error", err)
 	}
-	_ = tmux.NewParser()
-
 	// 6. ACL & pairing
 	guard := acl.NewGuard(st, logger)
 	pairingMgr := acl.NewPairingManager(st)
