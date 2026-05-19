@@ -82,11 +82,14 @@
 ```
 사용처: 그룹 일반 영역 (Topic 밖)
 권한: owner
+파라미터:
+  - honcho_session=<session-id> (선택): Honcho 세션 ID 설정
 동작:
   1. chat 객체의 is_forum 확인
   2. is_forum이 false면 거부 + "Forum Topics 활성화 필요" 안내
   3. chats 테이블에 INSERT OR REPLACE
-  4. audit_log 기록
+  4. honcho_session_id가 있으면 해당 토픽의 Honcho 세션 ID 업데이트
+  5. audit_log 기록
 응답: ✅ 성공 또는 ❌ 사유
 ```
 
@@ -382,20 +385,17 @@ tgcc는 hook 응답으로 Claude의 동작을 **차단하지 않는다** (v0.1).
 ```
 용도: 초기 설정
 동작:
-  1. ~/.tgcc/ 디렉토리 생성
+  1. 바이너리 디렉토리에 migrations/ 생성
   2. .env 템플릿 작성 (TELEGRAM_BOT_TOKEN, TGCC_HOOK_TOKEN 등)
-  3. tgcc.toml 템플릿 작성 (workspace_roots 등)
-  4. SQLite 초기화 (~/.tgcc/state.db)
-  5. ~/.claude/settings.json 에 hook 자동 등록 안내
+  3. ~/.claude/settings.json 에 hook 자동 등록 안내
 ```
 
 **예시:**
 ```bash
 $ tgcc init
-✅ ~/.tgcc/.env 생성
-✅ ~/.tgcc/tgcc.toml 생성
-✅ ~/.tgcc/state.db 초기화
-⚠️  ~/.tgcc/.env 의 TELEGRAM_BOT_TOKEN 을 BotFather에서 받은 토큰으로 설정하세요.
+✅ 초기화 완료: /opt/tgcc/bin
+✅ 환경 파일 생성: /opt/tgcc/bin/.env
+⚠️  .env 의 TELEGRAM_BOT_TOKEN 을 BotFather에서 받은 토큰으로 설정하세요.
 ```
 
 ### 3.2 `tgcc pair <code>`
@@ -438,33 +438,35 @@ $ tgcc init
 
 ### 3.6 환경변수 / 설정 파일
 
-`~/.tgcc/.env`:
+`{exe_dir}/.env`:
 ```bash
 TELEGRAM_BOT_TOKEN=123456:ABC...
 TGCC_HOOK_TOKEN=<32자 랜덤>
 TGCC_LOG_LEVEL=info
-TGCC_DB_PATH=~/.tgcc/state.db
+TGCC_DB_PATH={exe_dir}/state.db
 TGCC_HOOK_PORT=47829
 ```
 
-`~/.tgcc/tgcc.toml`:
+`{exe_dir}/tgcc.toml`:
 ```toml
-[workspace]
-roots = ["~/projects", "~/work"]
-exclude = ["node_modules", ".git"]
+[context]
+soft_warn_bytes     = 80000
+hard_compact_bytes  = 150000
+fresh_restart_bytes = 300000
+soft_warn_turns     = 60
+hard_compact_turns  = 100
+idle_hibernate_min  = 30
 
-[session]
-spawn_timeout_seconds = 5
-idle_threshold_seconds = 300
-crash_restart_max_attempts = 3
+[honcho]
+enabled   = true
+url       = "http://localhost:8000"
+workspace = "work"
 
-[tmux]
-session_name = "tgcc"          # 모든 토픽 윈도우가 들어갈 tmux 세션 이름
-binary = "tmux"
-
-[claude]
-binary = "claude"
-extra_args = []                # 예: ["--dangerously-skip-permissions"]
+[[topic]]
+thread_id         = 283
+honcho_session_id = "topic-infra"
+workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+model             = "claude-sonnet-4-6"
 ```
 
 ---

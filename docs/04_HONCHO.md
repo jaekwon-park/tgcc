@@ -276,7 +276,7 @@ stateDiagram-v2
 `tgcc.toml`의 honcho 설정을 바탕으로 spawn 시 환경변수 주입:
 
 ```bash
-HONCHO_API_KEY=$(cat ~/.tgcc/.env | grep HONCHO_API_KEY)
+HONCHO_API_KEY=$(grep HONCHO_API_KEY {exe_dir}/.env)
 HONCHO_WORKSPACE=tgcc
 HONCHO_PEER_NAME=alice
 HONCHO_AI_PEER=claude
@@ -286,7 +286,7 @@ HONCHO_SESSION_NAME=tgcc-topic-5   # mode에 따라
 또한 사용자의 `~/.honcho/config.json`이 있으면 그것이 우선이므로, `HONCHO_CONFIG_PATH` 환경변수로 tgcc 전용 config를 임시 디렉토리에 생성해 가리키게 한다.
 
 ```json
-// ~/.tgcc/honcho-runtime.json
+// {exe_dir}/honcho-runtime.json
 {
   "apiKey": "...",
   "peerName": "alice",

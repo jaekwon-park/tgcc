@@ -1,0 +1,34 @@
+[Unit]
+Description=tgcc — Telegram-Claude Code Bridge
+Documentation=https://github.com/jaekwon-park/tgcc
+After=network.target
+
+[Service]
+Type=simple
+User=insainty
+WorkingDirectory=/home/insainty
+EnvironmentFile=/opt/tgcc/bin/.env
+ExecStart=/opt/tgcc/bin/tgcc serve
+Restart=always
+RestartSec=5
+
+# Graceful shutdown
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+# Security hardening
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/opt/tgcc/bin /home/insainty/projects
+ReadOnlyPaths=/home/insainty/.claude
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=tgcc
+
+[Install]
+WantedBy=default.target
