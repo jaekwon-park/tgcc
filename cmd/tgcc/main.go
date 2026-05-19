@@ -261,8 +261,37 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	} else if tomlCfg != nil {
 		groupConfigs = tomlCfg.Groups
 		if len(tomlCfg.Groups) > 0 {
+			// chats.registered_by FK -> users.user_id NOT NULL. Use the first
+			// paired owner so toml-driven chat auto-register doesn't crash on a
+			// fresh DB where only the bootstrap owner exists. Skip auto-register
+			// (only) when no owner exists yet — operator must pair first.
+			var ownerID int64
+			ownerErr := st.DB.QueryRow(
+				`SELECT user_id FROM users WHERE role = 'owner' ORDER BY created_at LIMIT 1`,
+			).Scan(&ownerID)
 			synced := 0
 			for _, g := range tomlCfg.Groups {
+				existing, err := st.ChatByID(g.ChatID)
+				if err != nil {
+					logger.Warn("chat lookup failed", "chat_id", g.ChatID, "error", err)
+					continue
+				}
+				chatReady := existing != nil
+				if !chatReady {
+					if ownerErr != nil {
+						logger.Warn("chat auto-register skipped: no owner yet", "chat_id", g.ChatID)
+						continue
+					}
+					title := g.Name
+					if title == "" {
+						title = fmt.Sprintf("group-%d", g.ChatID)
+					}
+					if err := st.InsertChat(g.ChatID, title, true, ownerID); err != nil {
+						logger.Warn("chat auto-register failed", "chat_id", g.ChatID, "error", err)
+						continue
+					}
+					logger.Info("chat auto-registered from tgcc.toml", "chat_id", g.ChatID, "title", title, "registered_by", ownerID)
+				}
 				for _, tc := range g.Topics {
 					topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, "", tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
 					if err != nil {

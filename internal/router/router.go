@@ -353,12 +353,14 @@ func (r *Router) handleNew(ctx context.Context, update bot.Update, user *store.U
 		return fmt.Errorf("ensure topic: %w", err)
 	}
 
-	// Determine workspace path
+	// Determine workspace path: explicit arg > topic's stored workspace_path
+	// (auto-mapped from tgcc.toml or autoRegisterTopic) > fall back to listing.
 	var workspacePath string
 	if len(fields) >= 2 {
 		workspacePath = fields[1]
+	} else if topic.WorkspacePath != "" {
+		workspacePath = topic.WorkspacePath
 	} else {
-		// No workspace specified — list available workspaces
 		return r.handleWorkspaces(ctx, update, user)
 	}
 
