@@ -78,6 +78,8 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 		return r.handleList(ctx, update, user)
 	case "/workspaces":
 		return r.handleWorkspaces(ctx, update, user)
+	case "/model":
+		return r.handleModel(ctx, update, user, fields)
 	default:
 		r.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   update.Message.Chat.ID,
@@ -184,7 +186,7 @@ func (r *Router) handleHelp(ctx context.Context, update bot.Update, user *store.
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
-		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/help — 도움말\n/whoami — 본인 정보",
+		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/model — 현재 모델 확인\n/model <name> — 모델 변경 후 세션 재시작\n/help — 도움말\n/whoami — 본인 정보",
 	})
 	return nil
 }
@@ -290,7 +292,11 @@ func (r *Router) handleNew(ctx context.Context, update bot.Update, user *store.U
 	}
 
 	// Spawn session
-	sess, err := r.mgr.Spawn(ctx, topic.ID, workspacePath, chat.ID, threadID)
+	model := ""
+	if topic.ClaudeModel.Valid {
+		model = topic.ClaudeModel.String
+	}
+	sess, err := r.mgr.Spawn(ctx, topic.ID, workspacePath, chat.ID, threadID, model)
 	if err != nil {
 		r.logger.Error("spawn session failed", "error", err)
 		r.sender.Enqueue(bot.OutgoingMsg{
@@ -632,6 +638,63 @@ func (r *Router) handleWorkspaces(ctx context.Context, update bot.Update, user *
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
 		Text:     sb.String(),
+	})
+	return nil
+}
+
+// handleModel processes /model [name] command.
+// No args: show current model for this topic.
+// With arg: update model in DB, restart session if active.
+func (r *Router) handleModel(ctx context.Context, update bot.Update, user *store.User, fields []string) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.ensureTopic(ctx, chat.ID, threadID, "")
+	if err != nil {
+		return fmt.Errorf("ensure topic: %w", err)
+	}
+
+	if len(fields) < 2 {
+		model := "기본값"
+		if topic.ClaudeModel.Valid {
+			model = topic.ClaudeModel.String
+		}
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("현재 모델: %s", model),
+		})
+		return nil
+	}
+
+	newModel := fields[1]
+	if err := r.store.UpdateTopicModel(topic.ID, newModel); err != nil {
+		return fmt.Errorf("update topic model: %w", err)
+	}
+
+	sess, _ := r.mgr.GetSessionByTopic(topic.ID)
+	if sess != nil {
+		if killErr := r.mgr.Kill(ctx, sess.ID); killErr != nil {
+			r.logger.Warn("kill session for model restart", "error", killErr)
+		}
+		if _, spawnErr := r.mgr.Spawn(ctx, topic.ID, sess.WorkspacePath, chat.ID, threadID, newModel); spawnErr != nil {
+			r.logger.Error("respawn with new model failed", "error", spawnErr)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("모델이 %s(으)로 변경되었으나 세션 재시작에 실패했습니다: %v\n/new로 수동 시작하세요.", newModel, spawnErr),
+			})
+			return spawnErr
+		}
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     fmt.Sprintf("모델이 %s(으)로 변경되었습니다. 세션을 재시작합니다.", newModel),
 	})
 	return nil
 }

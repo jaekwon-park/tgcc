@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
 // Config holds all tgcc configuration values.
@@ -22,7 +24,8 @@ type Config struct {
 	LogLevel    string
 	TmuxBin     string
 	ClaudeBin   string
-	TmuxSession string
+	TmuxSession  string
+	TgccTomlPath string
 
 	// Derived
 	HomeDir string
@@ -70,6 +73,7 @@ func Load() (*Config, error) {
 		TmuxBin:          getEnvOrDefault(m, "TMUX_BIN", "tmux"),
 		ClaudeBin:        getEnvOrDefault(m, "CLAUDE_BIN", "claude"),
 		TmuxSession:      getEnvOrDefault(m, "TMUX_SESSION", ""),
+		TgccTomlPath:     getEnvOrDefault(m, "TGCC_TOML_PATH", filepath.Join(tgccDir, "tgcc.toml")),
 		HomeDir:          homeDir,
 		TgccDir:          tgccDir,
 	}
@@ -121,4 +125,33 @@ func getEnvOrDefault(m map[string]string, key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// TopicConfig represents a single [[topic]] entry in tgcc.toml.
+type TopicConfig struct {
+	ThreadID        int64  `toml:"thread_id"`
+	HonchoSessionID string `toml:"honcho_session_id"`
+	Model           string `toml:"model"`
+}
+
+// TgccToml represents the root of tgcc.toml.
+type TgccToml struct {
+	Topics []TopicConfig `toml:"topic"`
+}
+
+// LoadTgccToml reads and parses the tgcc.toml configuration file.
+// Returns nil if the file does not exist (no error).
+func LoadTgccToml(path string) (*TgccToml, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read tgcc.toml: %w", err)
+	}
+	var cfg TgccToml
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		return nil, fmt.Errorf("parse tgcc.toml: %w", err)
+	}
+	return &cfg, nil
 }

@@ -9,6 +9,7 @@ type Topic struct {
 	ThreadID      int64
 	Name          string
 	WorkspacePath string
+	ClaudeModel   sql.NullString
 	CreatedAt     int64
 }
 
@@ -74,9 +75,9 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	var workspace sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, claude_model, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.ClaudeModel, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -94,9 +95,9 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var workspace sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, claude_model, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &t.ClaudeModel, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -112,5 +113,22 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 // UpdateTopicWorkspace sets the workspace_path for a topic.
 func (s *Store) UpdateTopicWorkspace(topicID int64, workspacePath string) error {
 	_, err := s.DB.Exec(`UPDATE topics SET workspace_path = ? WHERE id = ?`, workspacePath, topicID)
+	return err
+}
+
+// UpdateTopicModel sets the claude_model for a topic.
+func (s *Store) UpdateTopicModel(topicID int64, model string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET claude_model = ? WHERE id = ?`, model, topicID)
+	return err
+}
+
+// UpsertTopic inserts or updates a topic record by (chat_id, thread_id).
+func (s *Store) UpsertTopic(chatID int64, threadID int64, name string, model string) error {
+	now := CurrentTimeMs()
+	_, err := s.DB.Exec(
+		`INSERT INTO topics (chat_id, thread_id, name, claude_model, created_at) VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(chat_id, thread_id) DO UPDATE SET name = excluded.name, claude_model = excluded.claude_model`,
+		chatID, threadID, name, nullString(model), now,
+	)
 	return err
 }
