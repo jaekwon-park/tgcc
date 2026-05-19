@@ -8,6 +8,7 @@ import (
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	"github.com/jaekwon-park/tgcc/internal/config"
+	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/store"
 )
 
@@ -17,25 +18,27 @@ const defaultSupervisorInterval = 30 * time.Second
 const hibernateSmallTranscriptThreshold int64 = 50000
 
 type Supervisor struct {
-	store    *store.Store
-	mgr      *Manager
-	interval time.Duration
-	logger   *slog.Logger
-	cfg      config.ContextConfig
-	sender   *bot.Sender
+	store        *store.Store
+	mgr          *Manager
+	interval     time.Duration
+	logger       *slog.Logger
+	cfg          config.ContextConfig
+	sender       *bot.Sender
+	honchoClient *honcho.HonchoClient
 }
 
-func NewSupervisor(st *store.Store, mgr *Manager, interval time.Duration, cfg config.ContextConfig, sender *bot.Sender) *Supervisor {
+func NewSupervisor(st *store.Store, mgr *Manager, interval time.Duration, cfg config.ContextConfig, sender *bot.Sender, honchoClient *honcho.HonchoClient) *Supervisor {
 	if interval == 0 {
 		interval = defaultSupervisorInterval
 	}
 	return &Supervisor{
-		store:    st,
-		mgr:      mgr,
-		interval: interval,
-		logger:   slog.Default(),
-		cfg:      cfg,
-		sender:   sender,
+		store:        st,
+		mgr:          mgr,
+		interval:     interval,
+		logger:       slog.Default(),
+		cfg:          cfg,
+		sender:       sender,
+		honchoClient: honchoClient,
 	}
 }
 
@@ -91,6 +94,10 @@ func (s *Supervisor) recover(ctx context.Context) {
 				summary = ""
 			}
 		}
+
+		// Enrich summary with Honcho long-term memory (nil-safe: no-op when disabled).
+		honchoSessionID := fmt.Sprintf("tgcc-topic-%d", sess.TopicID)
+		summary = s.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 
 		var chatID int64
 		var threadID int64

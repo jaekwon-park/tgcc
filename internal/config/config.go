@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/jaekwon-park/tgcc/internal/honcho"
 )
 
 // ContextConfig holds context lifecycle thresholds.
@@ -54,11 +55,15 @@ type Config struct {
 
 	// Context lifecycle thresholds
 	Context ContextConfig
+
+	// Honcho integration
+	Honcho honcho.HonchoConfig
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
 type tomlFile struct {
-	Context ContextConfig `toml:"context"`
+	Context ContextConfig      `toml:"context"`
+	Honcho  honcho.HonchoConfig `toml:"honcho"`
 }
 
 // Load reads .env from ~/.tgcc/.env and returns parsed Config.
@@ -105,6 +110,7 @@ func Load() (*Config, error) {
 		HomeDir:          homeDir,
 		TgccDir:          tgccDir,
 		Context:          DefaultContextConfig(),
+		Honcho:           honcho.DefaultHonchoConfig(),
 	}
 
 	tomlPath := filepath.Join(tgccDir, "tgcc.toml")
@@ -147,6 +153,17 @@ func loadTOML(path string, cfg *Config) error {
 	}
 	if tf.Context.IdleHibernateMin > 0 {
 		cfg.Context.IdleHibernateMin = tf.Context.IdleHibernateMin
+	}
+
+	// Merge non-default Honcho fields.
+	if tf.Honcho.Enabled {
+		cfg.Honcho.Enabled = tf.Honcho.Enabled
+	}
+	if tf.Honcho.BaseURL != "" {
+		cfg.Honcho.BaseURL = tf.Honcho.BaseURL
+	}
+	if tf.Honcho.Workspace != "" {
+		cfg.Honcho.Workspace = tf.Honcho.Workspace
 	}
 	return nil
 }
