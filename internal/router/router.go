@@ -1403,8 +1403,8 @@ func appendTopicToToml(path string, chatID, threadID int64, honchoSessionID, wor
 			result.WriteString("\n")
 		}
 	}
-	if insertPos < 0 {
-		// Group not found, append at end
+	if insertPos < 0 || insertPos >= len(lines) {
+		// Group not found or target is the last group — append at end
 		result.WriteString("\n")
 		result.WriteString(topicEntry)
 		result.WriteString("\n")
