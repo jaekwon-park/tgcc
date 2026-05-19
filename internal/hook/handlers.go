@@ -116,17 +116,20 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	transcriptPath, _ := payload["transcript_path"].(string)
 	h.logger.Info("hook stop received", "session_id", sessionID, "transcript_path", transcriptPath)
 
-	// Notify context monitor for context tracking/compaction and response relay.
-	// RelayResponse handles dedup via message_offsets — direct send is removed
-	// to prevent duplicate message delivery (H1 fix).
-	if h.monitor != nil {
-		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
-			h.logger.Warn("context monitor OnStopHook failed", "error", err)
-		}
-	}
-
+	// Return 200 immediately so Claude Code is not blocked waiting for relay.
+	// OnStopHook (DB updates + RelayResponse) runs in a goroutine.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+
+	if h.monitor != nil {
+		monitor := h.monitor
+		logger := h.logger
+		go func() {
+			if err := monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
+				logger.Warn("context monitor OnStopHook failed", "error", err)
+			}
+		}()
+	}
 }
 
 // extractLastAssistantMessage reads a JSONL transcript and returns the content
@@ -227,6 +230,15 @@ func (h *Handlers) HandleNotification(w http.ResponseWriter, r *http.Request) {
 	sessionID, _ := payload["session_id"].(string)
 	message, _ := payload["message"].(string)
 	h.logger.Info("hook notification received", "session_id", sessionID, "message", message)
+
+	// Drop idle notifications that fire after every Claude response.
+	// "--dangerously-skip-permissions" means permission prompts never appear,
+	// so "waiting for your input" is the only notification that fires in practice.
+	if strings.Contains(strings.ToLower(message), "waiting for your input") {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]bool{"ok": true})
+		return
+	}
 
 	if sessionID != "" && message != "" && h.store != nil && h.sender != nil {
 		// Same Claude-UUID-vs-tgcc-PK issue as the Stop hook: the hook payload
