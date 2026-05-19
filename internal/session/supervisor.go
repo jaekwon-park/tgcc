@@ -27,15 +27,18 @@ type Supervisor struct {
 	honchoClient *honcho.HonchoClient
 }
 
-func NewSupervisor(st *store.Store, mgr *Manager, interval time.Duration, cfg config.ContextConfig, sender *bot.Sender, honchoClient *honcho.HonchoClient) *Supervisor {
+func NewSupervisor(st *store.Store, mgr *Manager, interval time.Duration, cfg config.ContextConfig, sender *bot.Sender, honchoClient *honcho.HonchoClient, logger *slog.Logger) *Supervisor {
 	if interval == 0 {
 		interval = defaultSupervisorInterval
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	return &Supervisor{
 		store:        st,
 		mgr:          mgr,
 		interval:     interval,
-		logger:       slog.Default(),
+		logger:       logger,
 		cfg:          cfg,
 		sender:       sender,
 		honchoClient: honchoClient,

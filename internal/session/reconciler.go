@@ -18,8 +18,11 @@ type Reconciler struct {
 }
 
 // NewReconciler creates a Reconciler.
-func NewReconciler(st *store.Store, ta *tmux.Adapter, sender *bot.Sender) *Reconciler {
-	return &Reconciler{store: st, tmux: ta, sender: sender, logger: slog.Default()}
+func NewReconciler(st *store.Store, ta *tmux.Adapter, sender *bot.Sender, logger *slog.Logger) *Reconciler {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Reconciler{store: st, tmux: ta, sender: sender, logger: logger}
 }
 
 // Run performs a one-shot reconciliation: sessions that appear alive in DB but

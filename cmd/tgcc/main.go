@@ -329,7 +329,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	}()
 
 	// 4. Reconciler + Supervisor (M3)
-	reconciler := session.NewReconciler(st, tmuxAdapter, sender)
+	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
 	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
 		logger.Warn("reconciler run failed", "error", err)
 	}
@@ -359,7 +359,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	honchoClient := honcho.New(cfg.Honcho)
 
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
-	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient)
+	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
 
 	// 8. Router

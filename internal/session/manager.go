@@ -79,6 +79,7 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 		TmuxSession:    m.tmuxSession,
 		TmuxWindow:     windowName,
 		WorkspacePath:  workspacePath,
+		CorrelationID:  sessionID,
 		Status:         string(StatusPending),
 		CreatedAt:      now,
 		LastActivityAt: now,
@@ -98,13 +99,22 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	sess.Status = string(StatusSpawning)
 
 	// 5. Build claude command
-	claudeCmd := buildClaudeCommand(workspacePath, m.claudeBin, model)
+	args := []string{"--dangerously-skip-permissions"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	env := map[string]string{
+		"TGCC_CORRELATION_ID": sessionID,
+	}
+	claudeCmd := m.claudeBin + " " + strings.Join(args, " ")
 	m.logger.Info("spawning session", "session_id", sessionID, "window", windowName, "cmd", claudeCmd)
 
 	// 6. Spawn tmux window
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, workspacePath, m.claudeBin, args, env)
 	if err != nil {
-		m.store.UpdateSessionStatus(sessionID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on spawn error", "error", cerr)
+		}
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
 
@@ -120,7 +130,11 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	// 8. Wait briefly for claude to initialize, then transition to active
 	// (Hook-based activation comes in M4; for M2 we allow a brief startup window)
 	go func() {
-		time.Sleep(2 * time.Second)
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return
+		}
 		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusActive)); cerr != nil {
 			m.logger.Error("update status to active", "error", cerr)
 		}
@@ -241,20 +255,21 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	if claudeSessionID == "" {
 		claudeSessionID = sess.ID
 	}
-	resumeCmd := fmt.Sprintf("cd %s && %s --resume %s",
-		sess.WorkspacePath, m.claudeBin, claudeSessionID)
+	resumeArgs := []string{"--resume", claudeSessionID}
 	// Append model flag if topic has one configured
 	topic, topicErr := m.store.TopicByID(sess.TopicID)
 	if topicErr == nil && topic != nil && topic.ClaudeModel.Valid {
-		resumeCmd += fmt.Sprintf(" --model %s", topic.ClaudeModel.String)
+		resumeArgs = append(resumeArgs, "--model", topic.ClaudeModel.String)
 	}
 
 	windowName := sanitizeWindowName(filepath.Base(sess.WorkspacePath)) + "-r"
 	m.logger.Info("resuming session", "session_id", sessionID, "claude_session", claudeSessionID)
 
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, resumeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, sess.WorkspacePath, m.claudeBin, resumeArgs, nil)
 	if err != nil {
-		m.store.UpdateSessionStatus(sessionID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on resume error", "error", cerr)
+		}
 		return nil, fmt.Errorf("resume new-window: %w", err)
 	}
 
@@ -268,8 +283,14 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 
 	// Transition to active after short startup delay
 	go func() {
-		time.Sleep(2 * time.Second)
-		m.store.UpdateSessionStatus(sessionID, string(StatusActive))
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusActive)); cerr != nil {
+			m.logger.Warn("update status to active on resume", "error", cerr)
+		}
 	}()
 
 	return sess, nil
@@ -366,18 +387,6 @@ func sanitizeWindowName(name string) string {
 	return name
 }
 
-// buildClaudeCommand constructs the shell command to spawn claude.
-func buildClaudeCommand(workspacePath, claudeBin, model string) string {
-	if claudeBin == "" {
-		claudeBin = "claude"
-	}
-	cmd := fmt.Sprintf("cd %s && %s --dangerously-skip-permissions", workspacePath, claudeBin)
-	if model != "" {
-		cmd += fmt.Sprintf(" --model %s", model)
-	}
-	return cmd
-}
-
 // FreshRestart archives the current session and creates a fresh session for the same topic.
 // If summary is non-empty, it is sent as the first message to the new Claude session.
 func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary string, chatID, threadID int64) (*store.Session, error) {
@@ -421,14 +430,15 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	}
 
 	// 5. Spawn tmux window with fresh claude
-	var freshModel string
+	freshArgs := []string{"--dangerously-skip-permissions"}
 	if topic, err2 := m.store.TopicByID(oldSess.TopicID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
-		freshModel = topic.ClaudeModel.String
+		freshArgs = append(freshArgs, "--model", topic.ClaudeModel.String)
 	}
-	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin, freshModel)
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, oldSess.WorkspacePath, m.claudeBin, freshArgs, nil)
 	if err != nil {
-		m.store.UpdateSessionStatus(newID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(newID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on fresh restart error", "error", cerr)
+		}
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
 	if winfo.ID != "" {
@@ -441,7 +451,11 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 
 	// 6. Wait for claude to initialize, then send summary if provided
 	go func() {
-		time.Sleep(3 * time.Second)
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			return
+		}
 		if err := m.store.UpdateSessionStatus(newID, string(StatusActive)); err != nil {
 			m.logger.Error("update status to active on fresh restart", "error", err)
 		}

@@ -851,7 +851,10 @@ func (r *Router) handleCtxStatus(ctx context.Context, update bot.Update, user *s
 	}
 
 	// Parse topic-level overrides if present
-	overrides, _ := tmuxctx.ParseOverrides(topic.ContextOverrides)
+	overrides, overrideErr := tmuxctx.ParseOverrides(topic.ContextOverrides)
+	if overrideErr != nil {
+		r.logger.Warn("parse context overrides failed", "error", overrideErr)
+	}
 	status := r.ctxMon.CtxStatusWithOverrides(ctx, sess.ID, overrides)
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,
