@@ -354,6 +354,8 @@ flowchart TD
 
 ## 6. 디렉토리 구조
 
+### 소스 트리
+
 ```
 tgcc/
 ├── cmd/
@@ -380,6 +382,11 @@ tgcc/
 │   ├── hook/                    # Claude Code hook 수신
 │   │   ├── server.go            # HTTP :47829
 │   │   └── handlers.go          # SessionStart/Stop/Notification/...
+│   ├── context/                 # 컨텍스트 라이프사이클 모니터링
+│   │   ├── monitor.go           # 컨텍스트 크기 감시, 자동 compact/refresh
+│   │   └── override.go          # 토픽별 컨텍스트 임계값 오버라이드
+│   ├── honcho/                  # Honcho 메모리 클라이언트
+│   │   └── client.go            # REST API 호출 (representation, summarize)
 │   ├── store/                   # SQLite 액세스 계층
 │   │   ├── store.go             # 연결, 마이그레이션
 │   │   ├── users.go
@@ -394,6 +401,40 @@ tgcc/
 ├── go.sum
 └── README.md
 ```
+
+### 런타임 파일 (바이너리 옆)
+
+모든 런타임 파일은 tgcc 바이너리와 동일한 디렉토리에 위치한다 (`bin/` 또는 설치 경로).
+`TGCC_DB_PATH`, `TGCC_TOML_PATH` 환경변수로 개별 오버라이드 가능.
+
+```
+{exe_dir}/          # 바이너리가 있는 디렉토리 (예: /opt/tgcc/bin/)
+├── tgcc            # 바이너리
+├── .env            # 시크릿 (TELEGRAM_BOT_TOKEN 등), chmod 600
+├── tgcc.toml       # 설정 (context 임계값, Honcho, 토픽 매핑)
+├── state.db        # SQLite WAL 데이터베이스, chmod 600
+└── migrations/     # SQL 마이그레이션 (빌드 시 복사됨)
+    ├── 0001_init.sql
+    └── ...
+```
+
+### 워크스페이스 실제 예시 (ccgram 그룹)
+
+```
+{exe_dir}/workspace/
+├── ccgram/                      # 텔레그램 그룹명
+│   ├── infra/CLAUDE.md
+│   ├── dev/CLAUDE.md
+│   ├── gpu/CLAUDE.md
+│   ├── devops/CLAUDE.md
+│   ├── game-dev/CLAUDE.md
+│   └── general/CLAUDE.md
+└── hongbot-group/
+    └── general/CLAUDE.md
+```
+
+tgcc.toml의 `[[topic]]`에 `workspace_path`를 지정하면 tgcc 시작 시 DB에 자동 sync된다.
+`bin/` 전체는 `.gitignore` 대상이므로 워크스페이스 파일은 배포 시 수동 생성한다.
 
 ---
 
@@ -432,5 +473,5 @@ tgcc/
 | 알 수 없는 사용자 접근 | ACL 결정 흐름 (3.4), audit_log 기록 |
 | 페어링 코드 brute force | 6자리 숫자, 10분 TTL, 시도당 sleep 1초, 5회 실패 시 IP 차단 (v0.2) |
 | 임의 명령 실행 | tmux send-keys에 들어가는 내용은 사용자 메시지 그대로 — Claude Code 자체 권한 시스템에 위임 |
-| SQLite 파일 노출 | $HOME/.tgcc/state.db, chmod 600 |
+| SQLite 파일 노출 | `{exe_dir}/state.db`, chmod 600 |
 | Hook 엔드포인트 외부 노출 | 127.0.0.1만 bind, 공유 시크릿 헤더 검증 |
