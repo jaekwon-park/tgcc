@@ -70,6 +70,11 @@ func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath stri
 	session.TranscriptBytes = transcriptBytes
 	session.TurnCount = turnCount
 
+	// Save transcript path for crash recovery / refresh
+	if err := m.store.UpdateSessionTranscriptPath(sessionID, transcriptPath); err != nil {
+		m.logger.Warn("update transcript path failed", "error", err)
+	}
+
 	// If we're in compacting state, the compact just finished — re-stat and restore active.
 	if session.Status == "compacting" {
 		fi2, err := os.Stat(transcriptPath)

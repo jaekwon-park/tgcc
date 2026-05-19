@@ -85,6 +85,8 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 		return r.handleCompact(ctx, update, user)
 	case "/ctxstatus":
 		return r.handleCtxStatus(ctx, update, user)
+	case "/refresh":
+		return r.handleRefresh(ctx, update, user)
 	default:
 		r.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   update.Message.Chat.ID,
@@ -126,6 +128,27 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 			ThreadID: threadID,
 			Text:     "이 토픽에 활성 세션이 없습니다. /new <workspace>로 시작하세요.",
 		})
+		return nil
+	}
+
+	if sess.Status == "hibernated" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "💭 메모리 복구 중...",
+		})
+		summary := ""
+		if sess.TranscriptPath != "" {
+			summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
+		}
+		if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chat.ID, threadID); err != nil {
+			r.logger.Error("hibernate recovery failed", "error", err)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     fmt.Sprintf("❌ 복구 실패: %v", err),
+			})
+		}
 		return nil
 	}
 
@@ -191,7 +214,7 @@ func (r *Router) handleHelp(ctx context.Context, update bot.Update, user *store.
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
-		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/help — 도움말\n/whoami — 본인 정보",
+		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/refresh — 세션 새로고침 (아카이브 후 새 세션)\n/help — 도움말\n/whoami — 본인 정보",
 	})
 	return nil
 }
@@ -512,6 +535,8 @@ func (r *Router) handleStatus(ctx context.Context, update bot.Update, user *stor
 		statusIcon = "🔴"
 	case "pending", "spawning":
 		statusIcon = "⏳"
+	case "hibernated":
+		statusIcon = "💤"
 	case "stopping":
 		statusIcon = "🛑"
 	case "failed":
@@ -576,6 +601,8 @@ func (r *Router) handleList(ctx context.Context, update bot.Update, user *store.
 			icon = "🔴"
 		case "pending", "spawning":
 			icon = "⏳"
+		case "hibernated":
+			icon = "💤"
 		default:
 			icon = "⚪"
 		}
@@ -722,6 +749,63 @@ func (r *Router) handleCtxStatus(ctx context.Context, update bot.Update, user *s
 		ChatID:   chat.ID,
 		ThreadID: threadID,
 		Text:     status,
+	})
+	return nil
+}
+
+// handleRefresh processes /refresh — archive current session and spawn fresh one.
+func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *store.User) error {
+	if update.Message == nil || update.Message.Chat == nil {
+		return nil
+	}
+	chat := update.Message.Chat
+	threadID := update.Message.MessageThreadID
+
+	topic, err := r.store.TopicByChatThread(chat.ID, threadID)
+	if err != nil || topic == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	sess, err := r.mgr.GetSessionByTopic(topic.ID)
+	if err != nil || sess == nil {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     "이 토픽에 활성 세션이 없습니다.",
+		})
+		return nil
+	}
+
+	summary := ""
+	if sess.TranscriptPath != "" {
+		summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     "🔄 세션 새로고침 중...",
+	})
+
+	if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chat.ID, threadID); err != nil {
+		r.logger.Error("refresh failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chat.ID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 새로고침 실패: %v", err),
+		})
+		return err
+	}
+
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chat.ID,
+		ThreadID: threadID,
+		Text:     "🔄 세션 새로고침 완료",
 	})
 	return nil
 }

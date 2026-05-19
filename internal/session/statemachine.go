@@ -22,6 +22,7 @@ const (
 	StatusStopping   Status = "stopping"
 	StatusStopped    Status = "stopped"
 	StatusFailed     Status = "failed"
+	StatusHibernated Status = "hibernated"
 )
 
 // SideEffect is an optional function executed when a state transition occurs.
@@ -53,11 +54,13 @@ func NewStateMachine() *StateMachine {
 	sm.allow(StatusActive, StatusCrashed)
 	sm.allow(StatusActive, StatusStopping)
 	sm.allow(StatusActive, StatusCompacting)
+	sm.allow(StatusActive, StatusHibernated)
 
 	sm.allow(StatusIdle, StatusActive)
 	sm.allow(StatusIdle, StatusCrashed)
 	sm.allow(StatusIdle, StatusStopping)
 	sm.allow(StatusIdle, StatusCompacting)
+	sm.allow(StatusIdle, StatusHibernated)
 
 	sm.allow(StatusCompacting, StatusActive)
 	sm.allow(StatusCompacting, StatusIdle)
@@ -68,6 +71,9 @@ func NewStateMachine() *StateMachine {
 
 	sm.allow(StatusResuming, StatusActive)
 	sm.allow(StatusResuming, StatusFailed)
+
+	sm.allow(StatusHibernated, StatusResuming)
+	sm.allow(StatusHibernated, StatusStopping)
 
 	sm.allow(StatusStopping, StatusStopped)
 	sm.allow(StatusStopping, StatusFailed)
@@ -127,7 +133,7 @@ func (sm *StateMachine) IsTerminal(s Status) bool {
 // IsActive returns true if the session is in a running state that should be monitored.
 func (sm *StateMachine) IsActive(s Status) bool {
 	switch s {
-	case StatusActive, StatusIdle, StatusCompacting, StatusPending, StatusSpawning, StatusResuming:
+	case StatusActive, StatusIdle, StatusCompacting, StatusPending, StatusSpawning, StatusResuming, StatusHibernated:
 		return true
 	default:
 		return false
