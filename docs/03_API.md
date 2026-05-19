@@ -82,11 +82,14 @@
 ```
 사용처: 그룹 일반 영역 (Topic 밖)
 권한: owner
+파라미터:
+  - honcho_session=<session-id> (선택): Honcho 세션 ID 설정
 동작:
   1. chat 객체의 is_forum 확인
   2. is_forum이 false면 거부 + "Forum Topics 활성화 필요" 안내
   3. chats 테이블에 INSERT OR REPLACE
-  4. audit_log 기록
+  4. honcho_session_id가 있으면 해당 토픽의 Honcho 세션 ID 업데이트
+  5. audit_log 기록
 응답: ✅ 성공 또는 ❌ 사유
 ```
 
@@ -446,22 +449,24 @@ TGCC_HOOK_PORT=47829
 
 `{exe_dir}/tgcc.toml`:
 ```toml
-[workspace]
-roots = ["~/projects", "~/work"]
-exclude = ["node_modules", ".git"]
+[context]
+soft_warn_bytes     = 80000
+hard_compact_bytes  = 150000
+fresh_restart_bytes = 300000
+soft_warn_turns     = 60
+hard_compact_turns  = 100
+idle_hibernate_min  = 30
 
-[session]
-spawn_timeout_seconds = 5
-idle_threshold_seconds = 300
-crash_restart_max_attempts = 3
+[honcho]
+enabled   = true
+url       = "http://localhost:8000"
+workspace = "work"
 
-[tmux]
-session_name = "tgcc"          # 모든 토픽 윈도우가 들어갈 tmux 세션 이름
-binary = "tmux"
-
-[claude]
-binary = "claude"
-extra_args = []                # 예: ["--dangerously-skip-permissions"]
+[[topic]]
+thread_id         = 283
+honcho_session_id = "topic-infra"
+workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+model             = "claude-sonnet-4-6"
 ```
 
 ---

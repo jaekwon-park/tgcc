@@ -6,7 +6,7 @@ After=network.target
 [Service]
 Type=simple
 User=insainty
-WorkingDirectory=/opt/tgcc
+WorkingDirectory=/home/insainty
 EnvironmentFile=/opt/tgcc/bin/.env
 ExecStart=/opt/tgcc/bin/tgcc serve
 Restart=always
