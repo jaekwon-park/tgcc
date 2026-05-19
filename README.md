@@ -161,6 +161,7 @@ tgcc version       # 버전 확인
 
 | 명령 | 설명 |
 |------|------|
+| `/start` | 봇 소개 및 페어링 안내 |
 | `/new [경로]` | 새 Claude Code 세션 시작 |
 | `/resume` | 중단된 세션 재개 |
 | `/stop` | 세션 정상 종료 |
@@ -174,6 +175,7 @@ tgcc version       # 버전 확인
 | `/ctxconfig` | 토픽별 컨텍스트 임계값 설정 |
 | `/model [모델명]` | 토픽 모델 확인/변경 |
 | `/register` | 토픽 등록 |
+| `/list-archived` | 아카이브된 세션 목록 |
 | `/workspaces` | 작업 디렉토리 목록 |
 | `/whoami` | 본인 정보 |
 | `/help` | 명령 도움말 |
@@ -217,7 +219,6 @@ make clean          # 빌드 아티팩트 삭제
 | [docs/02_ARCHITECTURE.md](./docs/02_ARCHITECTURE.md) | 시스템 다이어그램, ACL 모델, 상태 머신, SQLite 스키마 |
 | [docs/03_API.md](./docs/03_API.md) | 봇 커맨드, Hook 인터페이스, CLI, 내부 HTTP API |
 | [docs/04_HONCHO.md](./docs/04_HONCHO.md) | Honcho 메모리 통합 (토픽별 격리) |
-| [docs/05_CONTEXT_LIFECYCLE.md](./docs/05_CONTEXT_LIFECYCLE.md) | 컨텍스트 라이프사이클 정책 |
 
 ## 마일스톤
 

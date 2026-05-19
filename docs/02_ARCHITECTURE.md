@@ -382,6 +382,11 @@ tgcc/
 │   ├── hook/                    # Claude Code hook 수신
 │   │   ├── server.go            # HTTP :47829
 │   │   └── handlers.go          # SessionStart/Stop/Notification/...
+│   ├── context/                 # 컨텍스트 라이프사이클 모니터링
+│   │   ├── monitor.go           # 컨텍스트 크기 감시, 자동 compact/refresh
+│   │   └── override.go          # 토픽별 컨텍스트 임계값 오버라이드
+│   ├── honcho/                  # Honcho 메모리 클라이언트
+│   │   └── client.go            # REST API 호출 (representation, summarize)
 │   ├── store/                   # SQLite 액세스 계층
 │   │   ├── store.go             # 연결, 마이그레이션
 │   │   ├── users.go
