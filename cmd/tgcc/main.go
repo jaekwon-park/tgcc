@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"syscall"
@@ -169,20 +170,42 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	defer st.Close()
 	logger.Info("sqlite connected", "path", cfg.DBPath)
 
-	// 2. Init components (stubs for future milestones)
-	_ = session.NewManager()
+	// 2. Set defaults
+	tmuxBin := cfg.TmuxBin
+	if tmuxBin == "" {
+		tmuxBin = "tmux"
+	}
+	tmuxSessionName := cfg.TmuxSession
+	if tmuxSessionName == "" {
+		tmuxSessionName = "tgcc"
+	}
+	claudeBin := cfg.ClaudeBin
+	if claudeBin == "" {
+		claudeBin = "claude"
+	}
+
+	// 3. Tmux version check — exit if tmux < 3.0
+	tmuxAdapter := tmux.NewAdapter(tmuxBin, tmuxSessionName, logger)
+	if err := tmuxAdapter.CheckVersion(3, 0); err != nil {
+		logger.Error("tmux version check failed", "error", err)
+		return fmt.Errorf("tmux version check failed (3.0+ required): %w", err)
+	}
+	logger.Info("tmux version check passed")
+
+	// Ensure tmux session exists (create if not)
+	if err := ensureTmuxSession(tmuxBin, tmuxSessionName); err != nil {
+		logger.Warn("could not ensure tmux session exists", "error", err)
+	}
+
+	// 4. Init stubs (for future milestones)
 	_ = session.NewSupervisor()
-	_ = session.NewStateMachine()
 	_ = session.NewReconciler()
-	_ = tmux.NewAdapter()
 	_ = tmux.NewParser()
 	_ = hook.NewServer()
 	_ = hook.NewHandlers()
 
-	// 3. Bot client
+	// 5. Bot client & sender
 	client := bot.NewClient(cfg.TelegramBotToken)
-
-	// 4. Bot sender (start consuming queue)
 	sender := bot.NewSender(client, logger)
 	go func() {
 		if err := sender.Start(ctx); err != nil {
@@ -190,14 +213,18 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}()
 
-	// 5. ACL guard
+	// 6. ACL & pairing
 	guard := acl.NewGuard(st, logger)
 	pairingMgr := acl.NewPairingManager(st)
 
-	// 6. Router
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr)
+	// 7. Session manager
+	workspaceRoot := cfg.HomeDir
+	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot)
 
-	// 7. Bot listener (long-polling)
+	// 8. Router
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr)
+
+	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)
 	go func() {
 		logger.Info("bot listener starting")
@@ -206,7 +233,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}()
 
-	// 8. Dispatch loop
+	// 10. Dispatch loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -244,4 +271,17 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 			}
 		}
 	}
+}
+
+// ensureTmuxSession creates the tmux session if it doesn't already exist.
+func ensureTmuxSession(tmuxBin, sessionName string) error {
+	// Check if session already exists
+	check := exec.Command(tmuxBin, "has-session", "-t", sessionName)
+	if check.Run() == nil {
+		return nil
+	}
+
+	// Create detached session with a placeholder window
+	create := exec.Command(tmuxBin, "new-session", "-d", "-s", sessionName, "-n", "idle")
+	return create.Run()
 }
