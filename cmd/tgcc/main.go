@@ -310,6 +310,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}()
 
+
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
 
