@@ -208,9 +208,19 @@ stateDiagram-v2
     Crashed --> Resuming: supervisor<br/>자동 재시작
     Resuming --> Active: resume 성공
     Resuming --> Failed: 3회 재시도 실패
+    Active --> Compacting: 컨텍스트 크기 초과<br/>(자동 또는 /compact)
+    Idle --> Compacting: 컨텍스트 크기 초과
+    Compacting --> Active: compaction 완료
+    Compacting --> Idle: compaction 완료<br/>+ 대기 메시지 없음
+    Compacting --> Stopping: /stop 또는<br/>토픽 삭제
+    Active --> Hibernated: idle_hibernate_min 초과
+    Idle --> Hibernated: 추가 유휴 시간 경과
+    Hibernated --> Resuming: 새 메시지 수신
+    Hibernated --> Stopping: /stop 또는<br/>토픽 삭제
     Active --> Stopping: /stop 또는<br/>토픽 삭제
     Idle --> Stopping: /stop 또는<br/>토픽 삭제
-    Stopping --> [*]
+    Stopping --> Stopped: kill 완료
+    Stopped --> [*]
     Failed --> [*]
 
     note right of Active
@@ -222,6 +232,15 @@ stateDiagram-v2
         텔레그램 토픽에
         ⚠️ 알림 발송
     end note
+    note right of Compacting
+        /compact 명령 또는
+        컨텍스트 임계값 초과 시
+        자동 트리거
+    end note
+    note right of Hibernated
+        tmux window 유지
+        메모리 캐시 정리
+    end note
 ```
 
 ### 4.1 상태 전이 규칙
@@ -230,14 +249,21 @@ stateDiagram-v2
 |-----------|--------|--------|
 | `*` → Pending | 새 토픽에 첫 메시지 | sessions INSERT, "워크스페이스 선택" 프롬프트 |
 | Pending → Spawning | 사용자가 workspace 선택 | tmux new-window + claude 실행 |
-| Spawning → Active | `SessionStart` hook 수신 (5초 타임아웃) | "✅ ready" 알림 |
+| Spawning → Active | `SessionStart` hook 수신 (2초 fallback) | "✅ ready" 알림 |
 | Spawning → Failed | 타임아웃 또는 exec 에러 | "❌ failed" 알림, sessions UPDATE status |
 | Active → Idle | 5분간 hook/메시지 없음 | 메모리 캐시 정리 (DB는 유지) |
 | Active → Crashed | tmux pane이 dead 상태 감지 | "⚠️ crashed" 알림 |
 | Crashed → Resuming | supervisor 트리거 (exp. backoff: 1s, 2s, 4s) | `claude --resume <id>` 실행 |
 | Resuming → Active | 새 `SessionStart` hook | "✅ resumed" 알림 |
 | Resuming → Failed | 3회 시도 실패 | "❌ resume failed, /new 필요" 알림 |
-| `*` → Stopping | `/stop` 또는 토픽 삭제 | tmux kill-window, sessions DELETE |
+| Active → Compacting | 컨텍스트 크기 초과 (/compact 또는 자동) | tmux send-keys /compact |
+| Compacting → Active | compaction 완료 | 상태만 변경 |
+| Compacting → Idle | compaction 완료 + 대기 메시지 없음 | 상태만 변경 |
+| Active → Hibernated | idle_hibernate_min 초과 | session hibernate (tmux window 유지) |
+| Idle → Hibernated | 추가 유휴 시간 경과 | session hibernate |
+| Hibernated → Resuming | 새 메시지 수신 | claude --resume 실행 |
+| Hibernated → Stopping | /stop 명령 또는 토픽 삭제 | tmux kill-window |
+| Stopping → Stopped | kill 완료 | sessions DELETE |
 
 ---
 
