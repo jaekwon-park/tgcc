@@ -16,7 +16,7 @@ import (
 // HonchoConfig holds configuration for the Honcho client.
 type HonchoConfig struct {
 	Enabled   bool   `toml:"enabled"`
-	BaseURL   string `toml:"base_url"`
+	BaseURL   string `toml:"url"`
 	Workspace string `toml:"workspace"`
 }
 
