@@ -95,10 +95,7 @@ func (s *Supervisor) recover(ctx context.Context) {
 			}
 		}
 
-		// Enrich summary with Honcho long-term memory (nil-safe: no-op when disabled).
-		honchoSessionID := fmt.Sprintf("tgcc-topic-%d", sess.TopicID)
-		summary = s.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
-
+		// Look up topic first so we can use its Honcho session ID.
 		var chatID int64
 		var threadID int64
 		topic, terr := s.store.TopicByID(sess.TopicID)
@@ -108,6 +105,13 @@ func (s *Supervisor) recover(ctx context.Context) {
 			chatID = topic.ChatID
 			threadID = topic.ThreadID
 		}
+
+		// Enrich summary with Honcho long-term memory (nil-safe: no-op when disabled).
+		honchoSessionID := fmt.Sprintf("tgcc-topic-%d", sess.TopicID)
+		if topic != nil {
+			honchoSessionID = topic.HonchoSessionID()
+		}
+		summary = s.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
 
 		if _, err := s.mgr.FreshRestart(ctx, sess.ID, summary, chatID, threadID); err != nil {
 			s.logger.Error("supervisor: fresh restart failed", "session_id", sess.ID, "err", err)
