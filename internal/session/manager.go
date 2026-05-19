@@ -326,6 +326,7 @@ func (m *Manager) ListActiveSessions(ctx context.Context) ([]*store.Session, err
 	activeStatuses := []string{
 		string(StatusPending), string(StatusSpawning), string(StatusActive),
 		string(StatusIdle), string(StatusCrashed), string(StatusResuming), string(StatusStopping),
+		string(StatusHibernated),
 	}
 	return m.store.ActiveSessions(activeStatuses)
 }
