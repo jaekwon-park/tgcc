@@ -101,6 +101,28 @@ func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 	return sessions, nil
 }
 
+// ActiveSessionCount returns the count of sessions matching the given statuses.
+func (s *Store) ActiveSessionCount(statuses []string) (int, error) {
+	if len(statuses) == 0 {
+		return 0, nil
+	}
+
+	placeholders := make([]string, len(statuses))
+	args := make([]interface{}, len(statuses))
+	for i, status := range statuses {
+		placeholders[i] = "?"
+		args[i] = status
+	}
+
+	query := `SELECT COUNT(*) FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `)`
+	var count int
+	err := s.DB.QueryRow(query, args...).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 // UpdateSessionStatus changes the session status.
 func (s *Store) UpdateSessionStatus(id string, status string) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET status = ?, last_activity_at = ? WHERE id = ?`, status, CurrentTimeMs(), id)

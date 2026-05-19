@@ -6,13 +6,18 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
+	"time"
 
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
@@ -24,7 +29,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/tmux"
 )
 
-const version = "0.1.0"
+const version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -51,15 +56,34 @@ func main() {
 	}
 }
 
-func printUsage() {
-	fmt.Fprintf(os.Stderr, `tgcc — Telegram Forum Topics ↔ Claude Code bridge
+// parseLogLevel converts a string log level to slog.Level.
+func parseLogLevel(level string) slog.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
+}
 
-Usage:
-  tgcc init              Initialize tgcc configuration
-  tgcc pair <code>       Complete pairing with a 6-digit code
-  tgcc serve             Start the tgcc daemon
-  tgcc status            Show daemon status
-  tgcc version           Print version
+func printUsage() {
+	fmt.Fprintf(os.Stderr, `tgcc — Telegram Forum Topics ↔ Claude Code 브릿지
+
+사용법:
+  tgcc init              초기 설정 (~/.tgcc/.env 생성)
+  tgcc pair <코드>       페어링 코드로 인증 완료
+  tgcc serve             데몬 실행 (봇 + Hook 서버 시작)
+  tgcc status            실행 중인 tgcc 상태 확인
+  tgcc version           버전 출력
+
+예시:
+  tgcc init
+  tgcc pair 738291
+  tgcc serve
 
 `)
 }
@@ -124,12 +148,14 @@ func cmdPair() {
 
 // cmdServe starts the main daemon.
 func cmdServe() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	cfg, err := config.Load()
 	if err != nil {
-		logger.Error("failed to load config", "error", err)
+		fmt.Fprintf(os.Stderr, "❌ 설정 로드 실패: %v\n", err)
 		os.Exit(1)
 	}
+	logLevel := parseLogLevel(cfg.LogLevel)
+	logger := slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: logLevel}))
+	logger.Info("tgcc starting", "version", version, "log_level", cfg.LogLevel)
 	if cfg.TelegramBotToken == "" {
 		logger.Error("missing TELEGRAM_BOT_TOKEN")
 		os.Exit(1)
@@ -154,10 +180,61 @@ func cmdServe() {
 	}
 }
 
-// cmdStatus queries the daemon health.
+// cmdStatus queries the daemon health via the internal HTTP API.
 func cmdStatus() {
-	// TODO: implement status command (query internal HTTP API)
-	fmt.Println("tgcc status — not implemented yet")
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 설정 로드 실패: %v\n", err)
+		os.Exit(1)
+	}
+
+	url := fmt.Sprintf("http://127.0.0.1:%d/healthz", cfg.HookPort)
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 요청 생성 실패\n")
+		os.Exit(1)
+	}
+	if cfg.HookToken != "" {
+		req.Header.Set("X-tgcc-Token", cfg.HookToken)
+	}
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ tgcc가 실행 중이 아닙니다. tgcc serve 로 시작하세요.\n")
+		os.Exit(1)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "❌ tgcc 응답 오류 (상태 코드: %d)\n", resp.StatusCode)
+		os.Exit(1)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "❌ 응답 읽기 실패\n")
+		os.Exit(1)
+	}
+
+	// Pretty-print JSON response
+	var result map[string]interface{}
+	if err := json.Unmarshal(body, &result); err != nil {
+		fmt.Println(string(body))
+		return
+	}
+
+	status, _ := result["status"].(string)
+	uptime, _ := result["uptime_seconds"].(float64)
+	sessionCount, _ := result["session_count"].(float64)
+	fmt.Printf("📊 tgcc 상태\n\n")
+	fmt.Printf("상태: %s\n", status)
+	if uptime > 0 {
+		fmt.Printf("가동 시간: %.0f초\n", uptime)
+	}
+	if sessionCount > 0 {
+		fmt.Printf("활성 세션: %.0f개\n", sessionCount)
+	}
 }
 
 // runServe is the core serve logic, separated for testability.
@@ -203,8 +280,14 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		logger.Warn("reconciler run failed", "error", err)
 	}
 	_ = tmux.NewParser()
-	_ = hook.NewServer()
-	_ = hook.NewHandlers()
+
+	// 4b. Hook server — internal HTTP API + Claude Code hook receiver
+	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger)
+	go func() {
+		if err := hookSrv.Start(ctx); err != nil {
+			logger.Error("hook server failed", "error", err)
+		}
+	}()
 
 	// 5. Bot client & sender
 	client := bot.NewClient(cfg.TelegramBotToken)
@@ -222,6 +305,9 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
 	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot)
+
+	// Wire session provider to hook server for status queries
+	hookSrv.SetSessionProvider(sessionMgr)
 
 	// 7b. Supervisor (M3) — restart crashed sessions periodically
 	supervisor := session.NewSupervisor(st, sessionMgr, 0)
