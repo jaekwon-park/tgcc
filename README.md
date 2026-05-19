@@ -36,18 +36,83 @@ sudo cp bin/tgcc /usr/local/bin/
 tgcc init
 ```
 
-`~/.tgcc/.env` 파일이 생성됩니다. `TELEGRAM_BOT_TOKEN`을 [@BotFather](https://t.me/BotFather)에서 받은 토큰으로 수정하세요.
+`~/.tgcc/.env` 파일이 생성됩니다. 필수 항목을 수정하세요.
 
 ```bash
-# ~/.tgcc/.env 예시
-TELEGRAM_BOT_TOKEN=123456:ABC...
-TGCC_HOOK_TOKEN=<자동 생성됨>
+# ~/.tgcc/.env
+TELEGRAM_BOT_TOKEN=<@BotFather에서 발급>
+TGCC_HOOK_TOKEN=<자동 생성됨 — 변경 불필요>
 TGCC_LOG_LEVEL=info
-TGCC_DB_PATH=/home/insainty/.tgcc/state.db
+TGCC_DB_PATH=/home/$USER/.tgcc/state.db
 TGCC_HOOK_PORT=47829
+TGCC_ALLOWED_USERS=<허용할 텔레그램 user_id, 콤마 구분>  # 예: 123456789,987654321
+TGCC_HOME_DIR=/home/$USER
 ```
 
-### 3. 페어링
+> `TGCC_ALLOWED_USERS`: 텔레그램 user_id 확인 방법 — [@userinfobot](https://t.me/userinfobot) 에 /start 전송
+
+### 3. tgcc.toml 설정 (선택, 권장)
+
+`~/.tgcc/tgcc.toml` 생성:
+
+```toml
+[context]
+soft_warn_bytes     = 80000
+hard_compact_bytes  = 150000
+fresh_restart_bytes = 300000
+soft_warn_turns     = 60
+hard_compact_turns  = 100
+idle_hibernate_min  = 30
+
+[honcho]
+enabled   = true
+url       = "http://localhost:8000"   # Honcho 서버 주소
+workspace = "work"
+
+# 포럼 토픽별 Honcho 세션 매핑 (thread_id는 텔레그램 포럼 토픽 ID)
+# 없으면 tgcc-topic-{DB_ID} 자동 생성
+[[topic]]
+thread_id         = 283
+honcho_session_id = "topic-infra"
+
+[[topic]]
+thread_id         = 145
+honcho_session_id = "topic-dev"
+model             = "claude-sonnet-4-6"   # 토픽별 Claude 모델 지정 (선택)
+```
+
+> `thread_id` 확인 방법: 포럼 토픽에서 메시지 링크 복사 → URL 형식 `t.me/c/그룹ID/thread_id/메시지ID`
+
+### 4. Claude Code hook 등록
+
+tgcc가 Claude Code의 Stop/Notification 이벤트를 수신하려면 hook을 등록해야 합니다.
+
+`~/.claude/settings.json` 에 추가:
+
+```json
+{
+  "hooks": {
+    "Stop": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "curl -s -X POST http://localhost:47829/hooks/stop -H 'Authorization: Bearer <TGCC_HOOK_TOKEN>' -H 'Content-Type: application/json' -d '{\"session_id\":\"$CLAUDE_SESSION_ID\",\"transcript_path\":\"$CLAUDE_TRANSCRIPT_PATH\"}'"
+      }]
+    }],
+    "Notification": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "command",
+        "command": "curl -s -X POST http://localhost:47829/hooks/notification -H 'Authorization: Bearer <TGCC_HOOK_TOKEN>' -H 'Content-Type: application/json' -d '{\"session_id\":\"$CLAUDE_SESSION_ID\",\"message\":\"$CLAUDE_NOTIFICATION\"}'"
+      }]
+    }]
+  }
+}
+```
+
+`<TGCC_HOOK_TOKEN>` 은 `~/.tgcc/.env`의 `TGCC_HOOK_TOKEN` 값으로 교체.
+
+### 5. 페어링
 
 ```bash
 # 1. 데몬 시작
@@ -55,13 +120,23 @@ tgcc serve
 
 # 2. 텔레그램에서 봇에게 /pair DM 전송 → 6자리 코드 수신
 # 3. 터미널에서 페어링 완료
-tgcc pair 738291
+tgcc pair <코드>
 ```
 
-### 4. 사용법
+### 6. 그룹 등록
+
+텔레그램 포럼 그룹에 봇을 초대한 뒤, 해당 토픽에서:
+
+```
+/register workspace=/path/to/workspace honcho_session=topic-infra
+```
+
+- `workspace`: Claude Code가 작업할 디렉토리 (생략 시 `TGCC_HOME_DIR`)
+- `honcho_session`: Honcho 세션 ID (tgcc.toml에 매핑하면 자동 적용)
+
+### 7. 사용법
 
 ```bash
-tgcc --help        # 도움말
 tgcc status        # 데몬 상태 확인
 tgcc version       # 버전 확인
 ```
@@ -70,20 +145,24 @@ tgcc version       # 버전 확인
 
 | 명령 | 설명 |
 |------|------|
-| `/start` | 봇 소개 |
-| `/pair` | 페어링 코드 발급 (DM) |
-| `/register` | 그룹 등록 |
-| `/new <경로>` | 새 Claude 세션 생성 |
-| `/resume` | 중단된 세션 복구 |
+| `/new [경로]` | 새 Claude Code 세션 시작 |
+| `/resume` | 중단된 세션 재개 |
 | `/stop` | 세션 정상 종료 |
 | `/kill` | 세션 강제 종료 |
 | `/status` | 현재 세션 상태 |
 | `/list` | 활성 세션 목록 |
+| `/refresh` | 세션 재시작 (컨텍스트 유지) |
+| `/compact` | 컨텍스트 즉시 압축 |
+| `/squash [N]` | 오래된 N개 턴 Honcho로 압축 |
+| `/ctxstatus` | 컨텍스트 사용량 확인 |
+| `/ctxconfig` | 토픽별 컨텍스트 임계값 설정 |
+| `/model [모델명]` | 토픽 모델 확인/변경 |
+| `/register` | 토픽 등록 |
 | `/workspaces` | 작업 디렉토리 목록 |
-| `/help` | 명령 도움말 |
 | `/whoami` | 본인 정보 |
+| `/help` | 명령 도움말 |
 
-### 5. systemd 서비스 등록 (Linux)
+### 8. systemd 서비스 등록 (Linux)
 
 ```bash
 sudo cp deployments/tgcc.service /etc/systemd/system/
