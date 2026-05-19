@@ -293,6 +293,19 @@ func (m *Manager) GetSessionByTopic(topicID int64) (*store.Session, error) {
 	return m.store.SessionByTopicID(topicID)
 }
 
+// ActiveSessionCount returns the number of non-terminal sessions.
+func (m *Manager) ActiveSessionCount() int {
+	activeStatuses := []string{
+		string(StatusPending), string(StatusSpawning), string(StatusActive),
+		string(StatusIdle), string(StatusCrashed), string(StatusResuming), string(StatusStopping),
+	}
+	count, err := m.store.ActiveSessionCount(activeStatuses)
+	if err != nil {
+		return 0
+	}
+	return count
+}
+
 // ListActiveSessions returns all sessions that are not in a terminal state.
 func (m *Manager) ListActiveSessions(ctx context.Context) ([]*store.Session, error) {
 	activeStatuses := []string{

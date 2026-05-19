@@ -55,21 +55,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("TELEGRAM_BOT_TOKEN is required but not set in %s", envPath)
 	}
 
-	hookPortStr := getEnvOrDefault(m, "HOOK_PORT", "47829")
+	hookPortStr := getEnvOrDefault(m, "TGCC_HOOK_PORT", "47829")
 	hookPort, err := strconv.Atoi(hookPortStr)
 	if err != nil {
-		return nil, fmt.Errorf("invalid HOOK_PORT value %q: %w", hookPortStr, err)
+		return nil, fmt.Errorf("invalid TGCC_HOOK_PORT value %q: %w", hookPortStr, err)
 	}
 
 	cfg := &Config{
 		TelegramBotToken: token,
-		DBPath:           getEnvOrDefault(m, "DB_PATH", filepath.Join(tgccDir, "state.db")),
+		DBPath:           getEnvOrDefault(m, "TGCC_DB_PATH", filepath.Join(tgccDir, "state.db")),
 		HookPort:         hookPort,
-		HookToken:        getEnvOrDefault(m, "HOOK_TOKEN", ""),
-		LogLevel:         getEnvOrDefault(m, "LOG_LEVEL", "info"),
-		TmuxBin:          getEnvOrDefault(m, "TMUX_BIN", "tmux"),
-		ClaudeBin:        getEnvOrDefault(m, "CLAUDE_BIN", "claude"),
-		TmuxSession:      getEnvOrDefault(m, "TMUX_SESSION", ""),
+		HookToken:        getEnvOrDefault(m, "TGCC_HOOK_TOKEN", ""),
+		LogLevel:         getEnvOrDefault(m, "TGCC_LOG_LEVEL", "info"),
+		TmuxBin:          getEnvOrDefault(m, "TGCC_TMUX_BIN", "tmux"),
+		ClaudeBin:        getEnvOrDefault(m, "TGCC_CLAUDE_BIN", "claude"),
+		TmuxSession:      getEnvOrDefault(m, "TGCC_TMUX_SESSION", ""),
 		HomeDir:          homeDir,
 		TgccDir:          tgccDir,
 	}
