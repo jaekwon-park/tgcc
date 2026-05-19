@@ -286,9 +286,15 @@ type TopicConfig struct {
 	WorkspacePath   string `toml:"workspace_path"`
 }
 
+// GroupConfig represents a single [[group]] entry in tgcc.toml.
+type GroupConfig struct {
+	ChatID int64         `toml:"chat_id"`
+	Topics []TopicConfig `toml:"topic"`
+}
+
 // TgccToml represents the root of tgcc.toml.
 type TgccToml struct {
-	Topics []TopicConfig `toml:"topic"`
+	Groups []GroupConfig `toml:"group"`
 }
 
 // LoadTgccToml reads and parses the tgcc.toml configuration file.

@@ -257,37 +257,18 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	tomlCfg, tomlErr := config.LoadTgccToml(cfg.TgccTomlPath)
 	if tomlErr != nil {
 		logger.Warn("failed to load tgcc.toml, skipping topic sync", "error", tomlErr)
-	} else if tomlCfg != nil && len(tomlCfg.Topics) > 0 {
+	} else if tomlCfg != nil && len(tomlCfg.Groups) > 0 {
 		synced := 0
-		for _, tc := range tomlCfg.Topics {
-			rows, err := st.DB.Query("SELECT id FROM topics WHERE thread_id = ?", tc.ThreadID)
-			if err != nil {
-				logger.Warn("topic lookup failed for tgcc.toml sync", "thread_id", tc.ThreadID, "error", err)
-				continue
-			}
-			var topicID int64
-			for rows.Next() {
-				if err := rows.Scan(&topicID); err != nil {
+		for _, g := range tomlCfg.Groups {
+			for _, tc := range g.Topics {
+				topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
+				if err != nil {
+					logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
 					continue
 				}
-				if tc.HonchoSessionID != "" {
-					if err := st.UpdateTopicHonchoSession(topicID, tc.HonchoSessionID); err != nil {
-						logger.Warn("sync honcho_session_id failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
-				if tc.Model != "" {
-					if err := st.UpdateTopicModel(topicID, tc.Model); err != nil {
-						logger.Warn("sync claude_model failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
-				if tc.WorkspacePath != "" {
-					if err := st.UpdateTopicWorkspace(topicID, tc.WorkspacePath); err != nil {
-						logger.Warn("sync workspace_path failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
 				synced++
+				logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
 			}
-			rows.Close()
 		}
 		logger.Info("tgcc.toml topic sync complete", "synced", synced)
 	}
