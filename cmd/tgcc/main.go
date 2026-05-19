@@ -255,41 +255,26 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// Sync topics from tgcc.toml
 	tomlCfg, tomlErr := config.LoadTgccToml(cfg.TgccTomlPath)
+	var groupConfigs []config.GroupConfig
 	if tomlErr != nil {
 		logger.Warn("failed to load tgcc.toml, skipping topic sync", "error", tomlErr)
-	} else if tomlCfg != nil && len(tomlCfg.Topics) > 0 {
-		synced := 0
-		for _, tc := range tomlCfg.Topics {
-			rows, err := st.DB.Query("SELECT id FROM topics WHERE thread_id = ?", tc.ThreadID)
-			if err != nil {
-				logger.Warn("topic lookup failed for tgcc.toml sync", "thread_id", tc.ThreadID, "error", err)
-				continue
+	} else if tomlCfg != nil {
+		groupConfigs = tomlCfg.Groups
+		if len(tomlCfg.Groups) > 0 {
+			synced := 0
+			for _, g := range tomlCfg.Groups {
+				for _, tc := range g.Topics {
+					topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, "", tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
+					if err != nil {
+						logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
+						continue
+					}
+					synced++
+					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
+				}
 			}
-			var topicID int64
-			for rows.Next() {
-				if err := rows.Scan(&topicID); err != nil {
-					continue
-				}
-				if tc.HonchoSessionID != "" {
-					if err := st.UpdateTopicHonchoSession(topicID, tc.HonchoSessionID); err != nil {
-						logger.Warn("sync honcho_session_id failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
-				if tc.Model != "" {
-					if err := st.UpdateTopicModel(topicID, tc.Model); err != nil {
-						logger.Warn("sync claude_model failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
-				if tc.WorkspacePath != "" {
-					if err := st.UpdateTopicWorkspace(topicID, tc.WorkspacePath); err != nil {
-						logger.Warn("sync workspace_path failed", "thread_id", tc.ThreadID, "error", err)
-					}
-				}
-				synced++
-			}
-			rows.Close()
+			logger.Info("tgcc.toml topic sync complete", "synced", synced)
 		}
-		logger.Info("tgcc.toml topic sync complete", "synced", synced)
 	}
 
 	// 2. Set defaults
@@ -329,7 +314,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	}()
 
 	// 4. Reconciler + Supervisor (M3)
-	reconciler := session.NewReconciler(st, tmuxAdapter, sender)
+	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
 	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
 		logger.Warn("reconciler run failed", "error", err)
 	}
@@ -359,11 +344,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	honchoClient := honcho.New(cfg.Honcho)
 
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
-	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient)
+	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
 
 	// 8. Router
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient)
+	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)

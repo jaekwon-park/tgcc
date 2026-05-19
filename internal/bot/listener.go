@@ -3,15 +3,17 @@ package bot
 import (
 	"context"
 	"log/slog"
+	"sync"
 	"time"
 )
 
 // Listener polls Telegram getUpdates and dispatches Update events to a channel.
 type Listener struct {
-	client  *Client
-	logger  *slog.Logger
-	updates chan Update
-	done    chan struct{}
+	client   *Client
+	logger   *slog.Logger
+	updates  chan Update
+	done     chan struct{}
+	stopOnce sync.Once // L2 fix: prevents double-close panic
 }
 
 // NewListener creates a new Listener.
@@ -77,6 +79,9 @@ func (l *Listener) Start(ctx context.Context) error {
 }
 
 // Stop signals the listener to shut down.
+// L2 fix: use sync.Once to prevent panic on double close.
 func (l *Listener) Stop() {
-	close(l.done)
+	l.stopOnce.Do(func() {
+		close(l.done)
+	})
 }

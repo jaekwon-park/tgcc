@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -53,21 +55,42 @@ func (h *Handlers) HandleSessionStart(w http.ResponseWriter, r *http.Request) {
 	cwd, _ := payload["cwd"].(string)
 	h.logger.Info("hook session-start received", "session_id", sessionID, "cwd", cwd)
 
-	if cwd != "" && h.store != nil {
-		sess, err := h.store.SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"})
-		if err != nil {
-			h.logger.Warn("hook session-start: lookup session by workspace failed", "error", err, "cwd", cwd)
-		} else if sess != nil {
-			if err := h.store.UpdateSessionClaudeID(sess.ID, sessionID); err != nil {
-				h.logger.Warn("hook session-start: update claude_session_id failed", "error", err)
-			}
-			if err := h.store.UpdateSessionStatus(sess.ID, "active"); err != nil {
-				h.logger.Warn("hook session-start: update status to active failed", "error", err)
-			}
-			h.logger.Info("hook session-start: session activated", "tgcc_session_id", sess.ID, "claude_session_id", sessionID)
-		} else {
-			h.logger.Warn("hook session-start: no pending/spawning session found for cwd", "cwd", cwd)
+	// Try correlation_id matching first (precise 1:1 match, prevents race on same workspace)
+	correlationID := ""
+	if env, ok := payload["env"].(map[string]interface{}); ok {
+		if cid, ok2 := env["TGCC_CORRELATION_ID"].(string); ok2 {
+			correlationID = cid
 		}
+	}
+
+	var sess *store.Session
+	if correlationID != "" && h.store != nil {
+		var lookupErr error
+		sess, lookupErr = h.store.SessionByCorrelationID(correlationID)
+		if lookupErr != nil {
+			h.logger.Warn("hook session-start: lookup by correlation_id failed", "error", lookupErr, "correlation_id", correlationID)
+		}
+	}
+
+	// Fall back to cwd matching if correlation_id didn't find a match
+	if sess == nil && cwd != "" && h.store != nil {
+		var lookupErr error
+		sess, lookupErr = h.store.SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"})
+		if lookupErr != nil {
+			h.logger.Warn("hook session-start: lookup session by workspace failed", "error", lookupErr, "cwd", cwd)
+		}
+	}
+
+	if sess != nil {
+		if err := h.store.UpdateSessionClaudeID(sess.ID, sessionID); err != nil {
+			h.logger.Warn("hook session-start: update claude_session_id failed", "error", err)
+		}
+		if err := h.store.UpdateSessionStatus(sess.ID, "active"); err != nil {
+			h.logger.Warn("hook session-start: update status to active failed", "error", err)
+		}
+		h.logger.Info("hook session-start: session activated", "tgcc_session_id", sess.ID, "claude_session_id", sessionID, "correlation_id", correlationID)
+	} else if cwd != "" {
+		h.logger.Warn("hook session-start: no pending/spawning session found", "cwd", cwd, "correlation_id", correlationID)
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -93,40 +116,9 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	transcriptPath, _ := payload["transcript_path"].(string)
 	h.logger.Info("hook stop received", "session_id", sessionID, "transcript_path", transcriptPath)
 
-	if sessionID != "" && h.store != nil && h.sender != nil {
-		// Look up by Claude session_id first (set during SessionStart hook),
-		// fall back to cwd-based matching if the cwd field is available.
-		sess, err := h.store.SessionByClaudeID(sessionID)
-		if err != nil {
-			h.logger.Warn("hook stop: session lookup by claude_id failed", "error", err, "session_id", sessionID)
-		}
-		if sess == nil {
-			// Fallback: try to match by cwd (workspace path)
-			if cwd, _ := payload["cwd"].(string); cwd != "" {
-				sess, err = h.store.SessionByWorkspaceAndStatus(cwd, []string{"active", "idle", "compacting"})
-				if err != nil {
-					h.logger.Warn("hook stop: session lookup by workspace failed", "error", err, "cwd", cwd)
-				}
-			}
-		}
-		if sess != nil {
-			topic, err := h.store.TopicByID(sess.TopicID)
-			if err != nil {
-				h.logger.Warn("hook stop: topic lookup failed", "error", err, "topic_id", sess.TopicID)
-			} else if topic != nil {
-				msg := h.extractLastAssistantMessage(transcriptPath)
-				if msg != "" {
-					h.sender.Enqueue(bot.OutgoingMsg{
-						ChatID:   topic.ChatID,
-						ThreadID: topic.ThreadID,
-						Text:     msg,
-					})
-				}
-			}
-		}
-	}
-
-	// Also notify context monitor for context tracking/compaction
+	// Notify context monitor for context tracking/compaction and response relay.
+	// RelayResponse handles dedup via message_offsets — direct send is removed
+	// to prevent duplicate message delivery (H1 fix).
 	if h.monitor != nil {
 		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
 			h.logger.Warn("context monitor OnStopHook failed", "error", err)
@@ -143,12 +135,33 @@ func (h *Handlers) extractLastAssistantMessage(transcriptPath string) string {
 	if transcriptPath == "" {
 		return ""
 	}
-	f, err := os.Open(transcriptPath)
+	// Validate and sanitize transcript path to prevent path traversal
+	cleaned := filepath.Clean(transcriptPath)
+	if !strings.HasPrefix(cleaned, filepath.Clean(homeClaudeProjects())) {
+		h.logger.Warn("hook stop: transcript path outside allowed directory", "path", transcriptPath, "cleaned", cleaned)
+		return ""
+	}
+	f, err := os.Open(cleaned)
 	if err != nil {
 		h.logger.Warn("hook stop: open transcript failed", "path", transcriptPath, "error", err)
 		return ""
 	}
 	defer f.Close()
+
+	// M3 fix: parse using the same nested structure as context/relay.go
+	// Claude Code transcript format: {"type":"assistant","message":{"role":"assistant","content":[...]}}
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
 
 	var lastAssistant string
 	scanner := bufio.NewScanner(f)
@@ -158,22 +171,42 @@ func (h *Handlers) extractLastAssistantMessage(transcriptPath string) string {
 		if len(line) == 0 {
 			continue
 		}
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(line, &msg); err != nil {
+		var entry transcriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
 			continue
 		}
-		if msg.Role == "assistant" {
-			lastAssistant = msg.Content
+		if entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			lastAssistant = strings.Join(parts, "\n")
 		}
 	}
-	_ = scanner.Err()
+	if err := scanner.Err(); err != nil {
+		h.logger.Warn("hook stop: scanner error reading transcript", "path", transcriptPath, "error", err)
+	}
 	if len(lastAssistant) > 4000 {
 		lastAssistant = lastAssistant[:4000]
 	}
 	return lastAssistant
+}
+
+func homeClaudeProjects() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.Getenv("HOME"), ".claude", "projects")
+	}
+	return filepath.Join(home, ".claude", "projects")
 }
 
 // HandleNotification handles POST /hooks/notification from Claude Code.

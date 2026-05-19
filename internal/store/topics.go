@@ -139,6 +139,12 @@ func (s *Store) UpdateTopicContextOverrides(topicID int64, overridesJSON string)
 	return err
 }
 
+// UpdateTopicName sets the name for a topic.
+func (s *Store) UpdateTopicName(topicID int64, name string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET name = ? WHERE id = ?`, name, topicID)
+	return err
+}
+
 // UpdateTopicHonchoSession sets the honcho_session_id for a topic.
 func (s *Store) UpdateTopicHonchoSession(topicID int64, honchoSessionID string) error {
 	_, err := s.DB.Exec(`UPDATE topics SET honcho_session_id = ? WHERE id = ?`, nullString(honchoSessionID), topicID)
@@ -170,4 +176,64 @@ func (s *Store) UpsertTopic(chatID int64, threadID int64, name string, model str
 		chatID, threadID, name, nullString(model), now,
 	)
 	return err
+}
+
+// UpsertTopicFull inserts or updates a topic record by (chat_id, thread_id),
+// also setting name, honcho_session_id, claude_model, and workspace_path.
+// Returns the topic's internal ID as a string.
+func (s *Store) UpsertTopicFull(chatID, threadID int64, name, honchoSession, model, workspacePath string) (string, error) {
+	existing, err := s.TopicByChatThread(chatID, threadID)
+	if err != nil {
+		return "", fmt.Errorf("lookup topic: %w", err)
+	}
+
+	if existing != nil {
+		if name != "" {
+			if err := s.UpdateTopicName(existing.ID, name); err != nil {
+				return "", fmt.Errorf("update name: %w", err)
+			}
+		}
+		if honchoSession != "" {
+			if err := s.UpdateTopicHonchoSession(existing.ID, honchoSession); err != nil {
+				return "", fmt.Errorf("update honcho_session: %w", err)
+			}
+		}
+		if model != "" {
+			if err := s.UpdateTopicModel(existing.ID, model); err != nil {
+				return "", fmt.Errorf("update model: %w", err)
+			}
+		}
+		if workspacePath != "" {
+			if err := s.UpdateTopicWorkspace(existing.ID, workspacePath); err != nil {
+				return "", fmt.Errorf("update workspace: %w", err)
+			}
+		}
+		return fmt.Sprintf("%d", existing.ID), nil
+	}
+
+	if name == "" {
+		name = fmt.Sprintf("topic-%d", threadID)
+	}
+	topic, err := s.InsertTopic(chatID, threadID, name)
+	if err != nil {
+		return "", fmt.Errorf("insert topic: %w", err)
+	}
+
+	if honchoSession != "" {
+		if err := s.UpdateTopicHonchoSession(topic.ID, honchoSession); err != nil {
+			return "", fmt.Errorf("update honcho_session: %w", err)
+		}
+	}
+	if model != "" {
+		if err := s.UpdateTopicModel(topic.ID, model); err != nil {
+			return "", fmt.Errorf("update model: %w", err)
+		}
+	}
+	if workspacePath != "" {
+		if err := s.UpdateTopicWorkspace(topic.ID, workspacePath); err != nil {
+			return "", fmt.Errorf("update workspace: %w", err)
+		}
+	}
+
+	return fmt.Sprintf("%d", topic.ID), nil
 }

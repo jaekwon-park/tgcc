@@ -3,6 +3,10 @@
 -- Replaces UNIQUE(topic_id) constraint with partial index WHERE archived_at IS NULL
 -- so multiple archived sessions can coexist for the same topic.
 
+-- H4 fix: disable FK checks during table rebuild (message_offsets references sessions).
+-- Foreign keys would block DROP TABLE sessions while message_offsets still exists.
+PRAGMA foreign_keys=OFF;
+
 -- Step 1: Create new sessions table with archived_at and without the UNIQUE(topic_id)
 CREATE TABLE IF NOT EXISTS sessions_new (
     id              TEXT PRIMARY KEY,
@@ -48,3 +52,6 @@ CREATE INDEX IF NOT EXISTS idx_sessions_activity ON sessions(last_activity_at);
 
 -- Step 6: Update schema version
 UPDATE system_meta SET value = '3' WHERE key = 'schema_version';
+
+-- H4 fix: re-enable foreign keys after table rebuild completes.
+PRAGMA foreign_keys=ON;

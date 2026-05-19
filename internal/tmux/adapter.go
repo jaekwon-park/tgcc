@@ -83,18 +83,39 @@ func (a *Adapter) CheckVersion(minMajor, minMinor int) error {
 	return nil
 }
 
+// shellSingleQuote wraps s in single quotes, escaping any existing single quotes.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
+}
+
 // NewWindow creates a new window in the given session and returns its WindowInfo.
 func (a *Adapter) NewWindow(session, name, cmd string) (*WindowInfo, error) {
-	args := []string{
+	return a.NewWindowWithEnv(session, name, "", cmd, nil, nil)
+}
+
+// NewWindowWithEnv creates a new tmux window with explicit working directory,
+// environment variables, and properly shell-escaped command arguments.
+func (a *Adapter) NewWindowWithEnv(session, name, dir, command string, args []string, env map[string]string) (*WindowInfo, error) {
+	tmuxArgs := []string{
 		"new-window",
 		"-t", session,
 		"-n", name,
 		"-P", "-F", windowFormat,
 	}
-	if cmd != "" {
-		args = append(args, cmd)
+	if dir != "" {
+		tmuxArgs = append(tmuxArgs, "-c", dir)
 	}
-	out, err := a.run(args...)
+	for k, v := range env {
+		tmuxArgs = append(tmuxArgs, "-e", k+"="+v)
+	}
+	if command != "" {
+		shellCmd := shellSingleQuote(command)
+		for _, arg := range args {
+			shellCmd += " " + shellSingleQuote(arg)
+		}
+		tmuxArgs = append(tmuxArgs, shellCmd)
+	}
+	out, err := a.run(tmuxArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("new-window: %w", err)
 	}

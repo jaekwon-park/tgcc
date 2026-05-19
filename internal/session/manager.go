@@ -79,6 +79,7 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 		TmuxSession:    m.tmuxSession,
 		TmuxWindow:     windowName,
 		WorkspacePath:  workspacePath,
+		CorrelationID:  sessionID,
 		Status:         string(StatusPending),
 		CreatedAt:      now,
 		LastActivityAt: now,
@@ -98,13 +99,22 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	sess.Status = string(StatusSpawning)
 
 	// 5. Build claude command
-	claudeCmd := buildClaudeCommand(workspacePath, m.claudeBin, model)
+	args := []string{"--dangerously-skip-permissions"}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	env := map[string]string{
+		"TGCC_CORRELATION_ID": sessionID,
+	}
+	claudeCmd := m.claudeBin + " " + strings.Join(args, " ")
 	m.logger.Info("spawning session", "session_id", sessionID, "window", windowName, "cmd", claudeCmd)
 
 	// 6. Spawn tmux window
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, workspacePath, m.claudeBin, args, env)
 	if err != nil {
-		m.store.UpdateSessionStatus(sessionID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on spawn error", "error", cerr)
+		}
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
 
@@ -119,9 +129,15 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 
 	// 8. Wait briefly for claude to initialize, then transition to active
 	// (Hook-based activation comes in M4; for M2 we allow a brief startup window)
+	// M4 fix: conditional update prevents stale timer from overwriting a status
+	// that has already changed (e.g. the hook set it to crashed/failed).
 	go func() {
-		time.Sleep(2 * time.Second)
-		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusActive)); cerr != nil {
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusSpawning), string(StatusActive)); cerr != nil {
 			m.logger.Error("update status to active", "error", cerr)
 		}
 	}()
@@ -241,20 +257,21 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	if claudeSessionID == "" {
 		claudeSessionID = sess.ID
 	}
-	resumeCmd := fmt.Sprintf("cd %s && %s --resume %s",
-		sess.WorkspacePath, m.claudeBin, claudeSessionID)
+	resumeArgs := []string{"--resume", claudeSessionID}
 	// Append model flag if topic has one configured
 	topic, topicErr := m.store.TopicByID(sess.TopicID)
 	if topicErr == nil && topic != nil && topic.ClaudeModel.Valid {
-		resumeCmd += fmt.Sprintf(" --model %s", topic.ClaudeModel.String)
+		resumeArgs = append(resumeArgs, "--model", topic.ClaudeModel.String)
 	}
 
 	windowName := sanitizeWindowName(filepath.Base(sess.WorkspacePath)) + "-r"
 	m.logger.Info("resuming session", "session_id", sessionID, "claude_session", claudeSessionID)
 
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, resumeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, sess.WorkspacePath, m.claudeBin, resumeArgs, nil)
 	if err != nil {
-		m.store.UpdateSessionStatus(sessionID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on resume error", "error", cerr)
+		}
 		return nil, fmt.Errorf("resume new-window: %w", err)
 	}
 
@@ -267,9 +284,16 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	}
 
 	// Transition to active after short startup delay
+	// M4 fix: conditional update only if status is still "resuming".
 	go func() {
-		time.Sleep(2 * time.Second)
-		m.store.UpdateSessionStatus(sessionID, string(StatusActive))
+		select {
+		case <-time.After(2 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusResuming), string(StatusActive)); cerr != nil {
+			m.logger.Warn("update status to active on resume", "error", cerr)
+		}
 	}()
 
 	return sess, nil
@@ -366,18 +390,6 @@ func sanitizeWindowName(name string) string {
 	return name
 }
 
-// buildClaudeCommand constructs the shell command to spawn claude.
-func buildClaudeCommand(workspacePath, claudeBin, model string) string {
-	if claudeBin == "" {
-		claudeBin = "claude"
-	}
-	cmd := fmt.Sprintf("cd %s && %s --dangerously-skip-permissions", workspacePath, claudeBin)
-	if model != "" {
-		cmd += fmt.Sprintf(" --model %s", model)
-	}
-	return cmd
-}
-
 // FreshRestart archives the current session and creates a fresh session for the same topic.
 // If summary is non-empty, it is sent as the first message to the new Claude session.
 func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary string, chatID, threadID int64) (*store.Session, error) {
@@ -421,14 +433,15 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	}
 
 	// 5. Spawn tmux window with fresh claude
-	var freshModel string
+	freshArgs := []string{"--dangerously-skip-permissions"}
 	if topic, err2 := m.store.TopicByID(oldSess.TopicID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
-		freshModel = topic.ClaudeModel.String
+		freshArgs = append(freshArgs, "--model", topic.ClaudeModel.String)
 	}
-	claudeCmd := buildClaudeCommand(oldSess.WorkspacePath, m.claudeBin, freshModel)
-	winfo, err := m.adapter.NewWindow(m.tmuxSession, windowName, claudeCmd)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, oldSess.WorkspacePath, m.claudeBin, freshArgs, nil)
 	if err != nil {
-		m.store.UpdateSessionStatus(newID, string(StatusFailed))
+		if cerr := m.store.UpdateSessionStatus(newID, string(StatusFailed)); cerr != nil {
+			m.logger.Warn("update status to failed on fresh restart error", "error", cerr)
+		}
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
 	if winfo.ID != "" {
@@ -440,9 +453,16 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	newSess.PID = int64(winfo.PID)
 
 	// 6. Wait for claude to initialize, then send summary if provided
+	// M4 fix: conditional update only if status is still "pending" (the initial state
+	// set in step 4). Prevents stale timer from overwriting a session that has
+	// already been changed to failed/crashed/stopped.
 	go func() {
-		time.Sleep(3 * time.Second)
-		if err := m.store.UpdateSessionStatus(newID, string(StatusActive)); err != nil {
+		select {
+		case <-time.After(3 * time.Second):
+		case <-ctx.Done():
+			return
+		}
+		if err := m.store.UpdateSessionStatusIf(newID, string(StatusPending), string(StatusActive)); err != nil {
 			m.logger.Error("update status to active on fresh restart", "error", err)
 		}
 		if summary != "" {
@@ -478,6 +498,20 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 	}
 	defer f.Close()
 
+	// M3 fix: parse using the same nested structure as context/relay.go
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+
 	type turn struct {
 		role    string
 		content string
@@ -491,15 +525,25 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 		if len(line) == 0 {
 			continue
 		}
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal(line, &msg); err != nil {
+		var entry transcriptEntry
+		if err := json.Unmarshal(line, &entry); err != nil {
 			continue // skip malformed lines
 		}
-		if msg.Role == "user" || msg.Role == "assistant" {
-			turns = append(turns, turn{role: msg.Role, content: msg.Content})
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			turns = append(turns, turn{role: entry.Type, content: strings.Join(parts, "\n")})
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -543,6 +587,20 @@ func (m *Manager) SquashOldestNTurns(transcriptPath string, n int) (string, []st
 	}
 	defer f.Close()
 
+	// M3 fix: parse using the same nested structure as context/relay.go
+	type contentBlock struct {
+		Type string `json:"type"`
+		Text string `json:"text,omitempty"`
+	}
+	type msgPayload struct {
+		Role    string         `json:"role"`
+		Content []contentBlock `json:"content"`
+	}
+	type transcriptEntry struct {
+		Type    string          `json:"type"`
+		Message json.RawMessage `json:"message"`
+	}
+
 	type turn struct {
 		role    string
 		content string
@@ -557,15 +615,25 @@ func (m *Manager) SquashOldestNTurns(transcriptPath string, n int) (string, []st
 		if line == "" {
 			continue
 		}
-		var msg struct {
-			Role    string `json:"role"`
-			Content string `json:"content"`
-		}
-		if err := json.Unmarshal([]byte(line), &msg); err != nil {
+		var entry transcriptEntry
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			continue
 		}
-		if msg.Role == "user" || msg.Role == "assistant" {
-			turns = append(turns, turn{role: msg.Role, content: msg.Content, rawLine: line})
+		if entry.Type != "user" && entry.Type != "assistant" {
+			continue
+		}
+		var payload msgPayload
+		if err := json.Unmarshal(entry.Message, &payload); err != nil {
+			continue
+		}
+		var parts []string
+		for _, block := range payload.Content {
+			if block.Type == "text" && block.Text != "" {
+				parts = append(parts, block.Text)
+			}
+		}
+		if len(parts) > 0 {
+			turns = append(turns, turn{role: entry.Type, content: strings.Join(parts, "\n"), rawLine: line})
 		}
 	}
 	if err := scanner.Err(); err != nil {

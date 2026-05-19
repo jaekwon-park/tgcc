@@ -15,6 +15,7 @@ import (
 
 	"github.com/jaekwon-park/tgcc/internal/acl"
 	"github.com/jaekwon-park/tgcc/internal/bot"
+	"github.com/jaekwon-park/tgcc/internal/config"
 	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
 	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/session"
@@ -31,11 +32,15 @@ type Router struct {
 	mgr          *session.Manager
 	ctxMon       *tmuxctx.Monitor
 	honchoClient *honcho.HonchoClient
+	groupConfigs []config.GroupConfig
+	tgccTomlPath string
+	exeDir       string
+	botClient    *bot.Client
 }
 
 // NewRouter creates a new Router.
-func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient) *Router {
-	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient}
+func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient, groupConfigs []config.GroupConfig, tgccTomlPath, exeDir string, botClient *bot.Client) *Router {
+	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient, groupConfigs: groupConfigs, tgccTomlPath: tgccTomlPath, exeDir: exeDir, botClient: botClient}
 }
 
 // Route dispatches an incoming message from an allowed user to the appropriate handler.
@@ -208,8 +213,23 @@ func (r *Router) handleStart(ctx context.Context, update bot.Update, user *store
 
 // handlePair responds to the /pair command.
 func (r *Router) handlePair(ctx context.Context, update bot.Update, user *store.User) error {
-	_ = user
 	if update.Message == nil || update.Message.From == nil || update.Message.Chat == nil {
+		return nil
+	}
+	if update.Message.Chat.Type != "private" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   update.Message.Chat.ID,
+			ThreadID: update.Message.MessageThreadID,
+			Text:     "❌ /pair 는 DM(1:1 채팅)에서만 사용할 수 있습니다.",
+		})
+		return nil
+	}
+	if user != nil && user.Role == "owner" {
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   update.Message.Chat.ID,
+			ThreadID: update.Message.MessageThreadID,
+			Text:     "이미 인증된 사용자입니다. /help 로 명령을 확인하세요.",
+		})
 		return nil
 	}
 	code, err := r.pairingMgr.GenerateCode(ctx, update.Message.From.ID)
@@ -851,7 +871,10 @@ func (r *Router) handleCtxStatus(ctx context.Context, update bot.Update, user *s
 	}
 
 	// Parse topic-level overrides if present
-	overrides, _ := tmuxctx.ParseOverrides(topic.ContextOverrides)
+	overrides, overrideErr := tmuxctx.ParseOverrides(topic.ContextOverrides)
+	if overrideErr != nil {
+		r.logger.Warn("parse context overrides failed", "error", overrideErr)
+	}
 	status := r.ctxMon.CtxStatusWithOverrides(ctx, sess.ID, overrides)
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,
@@ -1258,8 +1281,184 @@ func (r *Router) ensureTopic(ctx context.Context, chatID int64, threadID int64, 
 		if err != nil {
 			return nil, err
 		}
+		// Auto-register if this chat belongs to a known group
+		for _, gc := range r.groupConfigs {
+			if gc.ChatID == chatID {
+				if err := r.autoRegisterTopic(ctx, chatID, threadID, gc); err != nil {
+					r.logger.Warn("auto-register topic failed", "chat_id", chatID, "thread_id", threadID, "error", err)
+				}
+				break
+			}
+		}
+		// M1 fix: re-query after autoRegisterTopic updates fields
+		// (WorkspacePath, HonchoSessionID) that the insert-time pointer lacks.
+		topic, err = r.store.TopicByChatThread(chatID, threadID)
+		if err != nil {
+			return nil, err
+		}
 	}
 	return topic, nil
+}
+
+// ============================================================================
+// Auto-registration helpers (ADM-994)
+// ============================================================================
+
+// autoRegisterTopic performs full auto-registration for a new forum topic:
+// fetches topic name via Telegram API, creates workspace, upserts DB, writes toml.
+func (r *Router) autoRegisterTopic(ctx context.Context, chatID int64, threadID int64, gc config.GroupConfig) error {
+	// Get topic name from Telegram API
+	topicName := ""
+	if r.botClient != nil {
+		ft, err := r.botClient.GetForumTopicInfo(ctx, chatID, threadID)
+		if err != nil {
+			r.logger.Warn("getForumTopicInfo failed, using fallback", "chat_id", chatID, "thread_id", threadID, "error", err)
+		} else if ft != nil && ft.Name != "" {
+			topicName = ft.Name
+		}
+	}
+	if topicName == "" {
+		topicName = fmt.Sprintf("topic-%d", threadID)
+	}
+
+	// Create slug from topic name (M2: use topic-{threadID} as fallback for non-ASCII names)
+	slug := slugifyName(topicName, fmt.Sprintf("topic-%d", threadID))
+
+	// Build honcho session ID and workspace path
+	// M5 fix: sanitize gc.Name to prevent path traversal (e.g. "../" in group name).
+	groupSlug := slugifyName(gc.Name, "group")
+	honchoSessionID := fmt.Sprintf("topic-%s", slug)
+	workspacePath := filepath.Join(r.exeDir, "workspace", groupSlug, slug)
+
+	// Verify workspace path stays within exeDir after cleaning
+	cleanPath := filepath.Clean(workspacePath)
+	cleanExeDir := filepath.Clean(r.exeDir)
+	if !strings.HasPrefix(cleanPath, cleanExeDir+string(filepath.Separator)) {
+		return fmt.Errorf("workspace path escapes exeDir: %s", cleanPath)
+	}
+
+	// Create workspace directory
+	if err := os.MkdirAll(workspacePath, 0700); err != nil {
+		return fmt.Errorf("create workspace dir: %w", err)
+	}
+
+	// Create CLAUDE.md template
+	claudeMDPath := filepath.Join(workspacePath, "CLAUDE.md")
+	if _, err := os.Stat(claudeMDPath); os.IsNotExist(err) {
+		claudeMDContent := fmt.Sprintf("# %s\n\nThis workspace is auto-generated by tgcc.\n", topicName)
+		if err := os.WriteFile(claudeMDPath, []byte(claudeMDContent), 0600); err != nil {
+			return fmt.Errorf("create CLAUDE.md: %w", err)
+		}
+	}
+
+	// DB upsert
+	if _, err := r.store.UpsertTopicFull(chatID, threadID, topicName, honchoSessionID, "", workspacePath); err != nil {
+		return fmt.Errorf("upsert topic: %w", err)
+	}
+
+	// tgcc.toml write-back
+	if err := appendTopicToToml(r.tgccTomlPath, gc.ChatID, threadID, honchoSessionID, workspacePath); err != nil {
+		r.logger.Warn("toml write-back failed", "error", err)
+	}
+
+	r.logger.Info("auto-registered topic", "chat_id", chatID, "thread_id", threadID, "name", topicName, "workspace", workspacePath)
+	r.sender.Enqueue(bot.OutgoingMsg{
+		ChatID:   chatID,
+		ThreadID: threadID,
+		Text:     fmt.Sprintf("✅ 새 토픽 자동 등록 완료\n이름: %s\n워크스페이스: %s", topicName, workspacePath),
+	})
+	return nil
+}
+
+// slugifyName converts a name to a URL-safe slug.
+// Lowercase, spaces to hyphens, remove non-ASCII characters.
+// M2 fix: accepts fallback string for when slug is empty (e.g. Korean-only names).
+// Previously all non-ASCII names collapsed to "untitled", causing workspace/Honcho collisions.
+func slugifyName(name string, fallback string) string {
+	var sb strings.Builder
+	for _, r := range strings.ToLower(name) {
+		if r == ' ' || r == '-' || r == '_' {
+			sb.WriteRune('-')
+		} else if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' {
+			sb.WriteRune(r)
+		}
+	}
+	slug := strings.Trim(sb.String(), "-")
+	if slug == "" {
+		if fallback != "" {
+			slug = fallback
+		} else {
+			slug = "untitled"
+		}
+	}
+	return slug
+}
+
+// appendTopicToToml appends a [[group.topic]] entry to the correct [[group]] block in tgcc.toml.
+// H3 fix: checks for duplicate thread_id before appending to prevent re-registration dups.
+func appendTopicToToml(path string, chatID, threadID int64, honchoSessionID, workspacePath string) error {
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // no toml file, skip
+		}
+		return fmt.Errorf("read tgcc.toml: %w", err)
+	}
+
+	lines := strings.Split(string(content), "\n")
+
+	// H3: check if thread_id already exists in the file — skip if duplicate
+	threadIDStr := fmt.Sprintf("thread_id = %d", threadID)
+	for _, line := range lines {
+		if strings.Contains(strings.TrimSpace(line), threadIDStr) {
+			return nil // already registered, skip
+		}
+	}
+
+	// Build the topic entry
+	topicEntry := fmt.Sprintf("  [[group.topic]]\n  thread_id         = %d\n  honcho_session_id = \"%s\"\n  workspace_path    = \"%s\"", threadID, honchoSessionID, workspacePath)
+
+	// Find the target group by chat_id
+	targetChatStr := fmt.Sprintf("chat_id = %d", chatID)
+	insertPos := -1
+
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "chat_id") && strings.Contains(trimmed, targetChatStr) {
+			// Found our target group — find where to insert (before next [[group]] or EOF)
+			for j := i + 1; j < len(lines); j++ {
+				if strings.HasPrefix(strings.TrimSpace(lines[j]), "[[group]]") {
+					insertPos = j
+					break
+				}
+			}
+			if insertPos < 0 {
+				insertPos = len(lines) // append at end
+			}
+			break
+		}
+	}
+
+	// Build result with insertion
+	var result strings.Builder
+	for i, line := range lines {
+		if i == insertPos {
+			result.WriteString(topicEntry)
+			result.WriteString("\n")
+		}
+		result.WriteString(line)
+		if i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+	if insertPos < 0 || insertPos >= len(lines) {
+		// Group not found or target is the last group — append at end
+		result.WriteString("\n")
+		result.WriteString(topicEntry)
+		result.WriteString("\n")
+	}
+
+	return os.WriteFile(path, []byte(result.String()), 0600)
 }
 
 // formatDuration formats a duration in a human-readable way.
