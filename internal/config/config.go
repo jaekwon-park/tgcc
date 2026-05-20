@@ -287,6 +287,9 @@ type TopicConfig struct {
 	HonchoSessionID string `toml:"honcho_session_id"`
 	Model           string `toml:"model"`
 	WorkspacePath   string `toml:"workspace_path"`
+	// RequireMention gates this topic: when true the bot only responds to
+	// messages that @mention it or reply to one of its messages.
+	RequireMention bool `toml:"require_mention"`
 }
 
 // GroupConfig represents a single [[group]] entry in tgcc.toml.

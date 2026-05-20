@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -298,6 +299,13 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 						logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
 						continue
 					}
+					// Sync require_mention. Always written (not gated on true) so
+					// toggling it off in tgcc.toml takes effect on restart.
+					if id, perr := strconv.ParseInt(topicID, 10, 64); perr == nil {
+						if err := st.UpdateTopicRequireMention(id, tc.RequireMention); err != nil {
+							logger.Warn("update require_mention failed", "topic_id", topicID, "error", err)
+						}
+					}
 					synced++
 					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
 				}
@@ -335,6 +343,14 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// 5. Bot client & sender (moved before reconciler so crash notifications fire at startup)
 	client := bot.NewClient(cfg.TelegramBotToken)
+	// Learn our own @username for require_mention detection. Non-fatal.
+	botUsername := ""
+	if me, merr := client.GetMe(ctx); merr != nil {
+		logger.Warn("getMe failed; require_mention @mention detection limited to replies", "error", merr)
+	} else {
+		botUsername = me.Username
+		logger.Info("bot identity", "username", botUsername)
+	}
 	sender := bot.NewSender(client, logger)
 	go func() {
 		if err := sender.Start(ctx); err != nil {
@@ -379,7 +395,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// 8. Router
 	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client)
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client, botUsername)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)
