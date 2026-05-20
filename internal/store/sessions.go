@@ -149,6 +149,16 @@ func (s *Store) UpdateSessionPID(id string, pid int64) error {
 	return err
 }
 
+// UpdateSessionTmuxWindow persists the actual tmux window identifier (typically
+// the @N pane id returned by tmux new-window -P) so ForwardMessage and other
+// callers can target the live pane after Spawn/Resume/FreshRestart. Without
+// this the DB keeps the originally-requested window NAME, which goes stale the
+// moment Resume creates "<name>-r" or tmux deduplicates names across topics.
+func (s *Store) UpdateSessionTmuxWindow(id string, tmuxWindow string) error {
+	_, err := s.DB.Exec(`UPDATE sessions SET tmux_window = ?, last_activity_at = ? WHERE id = ?`, tmuxWindow, CurrentTimeMs(), id)
+	return err
+}
+
 func (s *Store) UpdateSessionClaudeID(id string, claudeSessionID string) error {
 	_, err := s.DB.Exec(`UPDATE sessions SET claude_session_id = ?, last_activity_at = ? WHERE id = ?`, claudeSessionID, CurrentTimeMs(), id)
 	return err

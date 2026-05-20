@@ -24,11 +24,14 @@ type ContextConfig struct {
 }
 
 // DefaultContextConfig returns sensible defaults for context lifecycle.
+// Byte thresholds are scaled to ~3 bytes/token observed in JSONL transcripts,
+// targeting 75/85/95% of the 1M-context window used by Opus 4.7 / Claude Max.
+// Override per-deployment in tgcc.toml [context] when running smaller models.
 func DefaultContextConfig() ContextConfig {
 	return ContextConfig{
-		SoftWarnBytes:     80000,
-		HardCompactBytes:  150000,
-		FreshRestartBytes: 300000,
+		SoftWarnBytes:     2250000,
+		HardCompactBytes:  2550000,
+		FreshRestartBytes: 2850000,
 		SoftWarnTurns:     60,
 		HardCompactTurns:  100,
 		IdleHibernateMin:  30,
@@ -50,6 +53,16 @@ type ClaudeConfig struct {
 // WorkspaceConfig holds workspace scanning configuration from tgcc.toml.
 type WorkspaceConfig struct {
 	Roots []string `toml:"roots"`
+}
+
+// SpawnConfig holds settings applied to every Claude session tgcc spawns.
+// Env is merged on top of the bot's inherited process environment when tmux
+// new-window runs `claude`, so it can extend PATH (e.g. to reach ~/.local/bin
+// for rtk, npm-global tools) or inject any other variable the workspace needs.
+// Per-spawn keys like TGCC_CORRELATION_ID are added on top of this map and
+// always win.
+type SpawnConfig struct {
+	Env map[string]string `toml:"env"`
 }
 
 // Config holds all tgcc configuration values.
@@ -81,6 +94,7 @@ type Config struct {
 	Tmux      TmuxConfig
 	Claude    ClaudeConfig
 	Workspace WorkspaceConfig
+	Spawn     SpawnConfig
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
@@ -90,6 +104,7 @@ type tomlFile struct {
 	Tmux      TmuxConfig          `toml:"tmux"`
 	Claude    ClaudeConfig        `toml:"claude"`
 	Workspace WorkspaceConfig     `toml:"workspace"`
+	Spawn     SpawnConfig         `toml:"spawn"`
 }
 
 // Load reads .env from the binary directory and returns parsed Config.
@@ -228,6 +243,17 @@ func loadTOML(path string, cfg *Config) error {
 	if len(tf.Workspace.Roots) > 0 {
 		cfg.Workspace.Roots = tf.Workspace.Roots
 	}
+	// Merge Spawn env. Last writer wins so the toml file overrides anything
+	// previously seeded into cfg.Spawn.Env (today nothing seeds it, but keeps
+	// the merge consistent with the other sections above).
+	if len(tf.Spawn.Env) > 0 {
+		if cfg.Spawn.Env == nil {
+			cfg.Spawn.Env = make(map[string]string, len(tf.Spawn.Env))
+		}
+		for k, v := range tf.Spawn.Env {
+			cfg.Spawn.Env[k] = v
+		}
+	}
 	return nil
 }
 
@@ -284,6 +310,9 @@ type TopicConfig struct {
 	HonchoSessionID string `toml:"honcho_session_id"`
 	Model           string `toml:"model"`
 	WorkspacePath   string `toml:"workspace_path"`
+	// RequireMention gates this topic: when true the bot only responds to
+	// messages that @mention it or reply to one of its messages.
+	RequireMention bool `toml:"require_mention"`
 }
 
 // GroupConfig represents a single [[group]] entry in tgcc.toml.

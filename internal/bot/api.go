@@ -25,7 +25,7 @@ type Client struct {
 func NewClient(token string) *Client {
 	return &Client{
 		token:      token,
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 		baseURL:    telegramBaseURL,
 	}
 }
@@ -47,6 +47,16 @@ type Message struct {
 	MessageThreadID   int64              `json:"message_thread_id,omitempty"`
 	IsTopicMessage    bool               `json:"is_topic_message,omitempty"`
 	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
+	Entities          []MessageEntity    `json:"entities,omitempty"`
+	ReplyToMessage    *Message           `json:"reply_to_message,omitempty"`
+}
+
+// MessageEntity is a special entity in a text message (mentions, commands, etc.).
+type MessageEntity struct {
+	Type   string `json:"type"`   // "mention", "text_mention", "bot_command", ...
+	Offset int    `json:"offset"` // UTF-16 code unit offset
+	Length int    `json:"length"` // UTF-16 code unit length
+	User   *User  `json:"user,omitempty"`
 }
 
 // User represents a Telegram user.
@@ -63,6 +73,65 @@ type Chat struct {
 	Type    string `json:"type"` // "private", "group", "supergroup"
 	Title   string `json:"title,omitempty"`
 	IsForum bool   `json:"is_forum,omitempty"`
+}
+
+// GetMe returns the bot's own account (used to learn the bot username for
+// @mention detection).
+func (c *Client) GetMe(ctx context.Context) (*User, error) {
+	raw, err := c.apiRequest(ctx, "getMe", map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("getMe request failed: %w", err)
+	}
+	u := &User{}
+	if err := json.Unmarshal(raw, u); err != nil {
+		return nil, fmt.Errorf("decode getMe result: %w", err)
+	}
+	return u, nil
+}
+
+// SendChatAction shows a transient status (e.g. "typing…") in the chat/topic.
+// Telegram auto-expires it after ~5s, so callers refresh periodically while
+// work is in progress. Best-effort.
+func (c *Client) SendChatAction(ctx context.Context, chatID int64, threadID int64, action string) error {
+	params := map[string]interface{}{
+		"chat_id": chatID,
+		"action":  action,
+	}
+	if threadID > 0 {
+		params["message_thread_id"] = threadID
+	}
+	if _, err := c.apiRequest(ctx, "sendChatAction", params); err != nil {
+		return fmt.Errorf("sendChatAction request failed: %w", err)
+	}
+	return nil
+}
+
+// EditMessageText edits an existing message's text (used for the animated
+// "thinking" bubble). parse_mode is left default (plain) since the bubble is
+// short status text.
+func (c *Client) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
+	params := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+	}
+	if _, err := c.apiRequest(ctx, "editMessageText", params); err != nil {
+		return fmt.Errorf("editMessageText request failed: %w", err)
+	}
+	return nil
+}
+
+// DeleteMessage removes a message (used to clear the thinking bubble before
+// the real response is sent).
+func (c *Client) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	params := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}
+	if _, err := c.apiRequest(ctx, "deleteMessage", params); err != nil {
+		return fmt.Errorf("deleteMessage request failed: %w", err)
+	}
+	return nil
 }
 
 // GetUpdates fetches new updates using long-polling.

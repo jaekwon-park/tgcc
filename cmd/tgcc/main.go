@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -261,13 +262,49 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	} else if tomlCfg != nil {
 		groupConfigs = tomlCfg.Groups
 		if len(tomlCfg.Groups) > 0 {
+			// chats.registered_by FK -> users.user_id NOT NULL. Use the first
+			// paired owner so toml-driven chat auto-register doesn't crash on a
+			// fresh DB where only the bootstrap owner exists. Skip auto-register
+			// (only) when no owner exists yet — operator must pair first.
+			var ownerID int64
+			ownerErr := st.DB.QueryRow(
+				`SELECT user_id FROM users WHERE role = 'owner' ORDER BY created_at LIMIT 1`,
+			).Scan(&ownerID)
 			synced := 0
 			for _, g := range tomlCfg.Groups {
+				existing, err := st.ChatByID(g.ChatID)
+				if err != nil {
+					logger.Warn("chat lookup failed", "chat_id", g.ChatID, "error", err)
+					continue
+				}
+				chatReady := existing != nil
+				if !chatReady {
+					if ownerErr != nil {
+						logger.Warn("chat auto-register skipped: no owner yet", "chat_id", g.ChatID)
+						continue
+					}
+					title := g.Name
+					if title == "" {
+						title = fmt.Sprintf("group-%d", g.ChatID)
+					}
+					if err := st.InsertChat(g.ChatID, title, true, ownerID); err != nil {
+						logger.Warn("chat auto-register failed", "chat_id", g.ChatID, "error", err)
+						continue
+					}
+					logger.Info("chat auto-registered from tgcc.toml", "chat_id", g.ChatID, "title", title, "registered_by", ownerID)
+				}
 				for _, tc := range g.Topics {
 					topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, "", tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
 					if err != nil {
 						logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
 						continue
+					}
+					// Sync require_mention. Always written (not gated on true) so
+					// toggling it off in tgcc.toml takes effect on restart.
+					if id, perr := strconv.ParseInt(topicID, 10, 64); perr == nil {
+						if err := st.UpdateTopicRequireMention(id, tc.RequireMention); err != nil {
+							logger.Warn("update require_mention failed", "topic_id", topicID, "error", err)
+						}
 					}
 					synced++
 					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)
@@ -306,12 +343,25 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// 5. Bot client & sender (moved before reconciler so crash notifications fire at startup)
 	client := bot.NewClient(cfg.TelegramBotToken)
+	// Learn our own @username for require_mention detection. Non-fatal.
+	botUsername := ""
+	if me, merr := client.GetMe(ctx); merr != nil {
+		logger.Warn("getMe failed; require_mention @mention detection limited to replies", "error", merr)
+	} else {
+		botUsername = me.Username
+		logger.Info("bot identity", "username", botUsername)
+	}
 	sender := bot.NewSender(client, logger)
 	go func() {
 		if err := sender.Start(ctx); err != nil {
 			logger.Error("sender stopped", "error", err)
 		}
 	}()
+
+	// Typing indicator: shows "typing…" in topics while Claude works, cleared
+	// by the poller when the response is relayed.
+	typingMgr := bot.NewTypingManager(client, logger)
+	go typingMgr.Start(ctx)
 
 	// 4. Reconciler + Supervisor (M3)
 	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
@@ -322,9 +372,13 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	guard := acl.NewGuard(st, logger)
 	pairingMgr := acl.NewPairingManager(st)
 
+	// 7a. Honcho client — created before session.Manager so FreshRestart can
+	// persist transcripts to Honcho prior to archiving the dying session.
+	honchoClient := honcho.New(cfg.Honcho)
+
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
-	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots)
+	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, honchoClient, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots, cfg.Spawn.Env)
 
 	// 4c. Context lifecycle monitor (M6)
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
@@ -340,16 +394,19 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
 
-	// 7b. Honcho client
-	honchoClient := honcho.New(cfg.Honcho)
-
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
 	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
 
+	// 7d. Transcript poller — primary response relay. Tails each active
+	// session's transcript every 2s and forwards new assistant messages to
+	// Telegram (replaces the fragile Stop-hook relay).
+	poller := tmuxctx.NewPoller(st, sender, typingMgr, logger)
+	go poller.Start(ctx)
+
 	// 8. Router
 	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client)
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client, botUsername, typingMgr)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)

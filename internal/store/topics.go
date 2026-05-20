@@ -15,6 +15,7 @@ type Topic struct {
 	honchoSessionID  sql.NullString
 	ContextOverrides string
 	ClaudeModel      sql.NullString
+	RequireMention   bool
 	CreatedAt        int64
 }
 
@@ -82,9 +83,9 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -108,9 +109,9 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -125,6 +126,12 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 		t.ContextOverrides = ctxOverrides.String
 	}
 	return t, nil
+}
+
+// UpdateTopicRequireMention sets the require_mention flag for a topic.
+func (s *Store) UpdateTopicRequireMention(topicID int64, require bool) error {
+	_, err := s.DB.Exec(`UPDATE topics SET require_mention = ? WHERE id = ?`, require, topicID)
+	return err
 }
 
 // UpdateTopicWorkspace sets the workspace_path for a topic.
