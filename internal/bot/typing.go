@@ -45,8 +45,10 @@ func typingKey(chatID, threadID int64) string {
 	return fmt.Sprintf("%d:%d", chatID, threadID)
 }
 
-// Ping marks a topic as actively working: the indicator shows on the next loop
-// tick and keeps refreshing until Clear() or typingMaxWindow elapses.
+// Ping marks a topic as actively working and shows the indicator immediately
+// (not waiting for the next loop tick) so even fast, short responses get a
+// visible "typing…". The loop then refreshes it until Clear() or
+// typingMaxWindow elapses.
 func (m *TypingManager) Ping(chatID, threadID int64) {
 	if m == nil {
 		return
@@ -54,6 +56,12 @@ func (m *TypingManager) Ping(chatID, threadID int64) {
 	m.mu.Lock()
 	m.deadline[typingKey(chatID, threadID)] = time.Now().Add(typingMaxWindow)
 	m.mu.Unlock()
+	// Immediate first send (best-effort, off the caller's goroutine).
+	go func() {
+		if err := m.client.SendChatAction(context.Background(), chatID, threadID, "typing"); err != nil {
+			m.logger.Debug("typing action failed (immediate)", "chat_id", chatID, "thread_id", threadID, "error", err)
+		}
+	}()
 }
 
 // Clear stops the indicator for a topic (response delivered).
