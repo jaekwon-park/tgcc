@@ -83,7 +83,7 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	// 3. Create session record
 	now := store.CurrentTimeMs()
 	sessionID := uuid.New().String()
-	windowName := sanitizeWindowName(filepath.Base(workspacePath))
+	windowName := windowNameForWorkspace(workspacePath)
 
 	sess := &store.Session{
 		ID:             sessionID,
@@ -130,9 +130,16 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
 
-	// 7. Update PID and tmux window ID
+	// 7. Update PID and tmux window ID. Persist tmux_window to DB — tmux
+	// returns the stable @N pane id (e.g. "@7") which is what subsequent
+	// ForwardMessage calls must target. Leaving DB on the human window NAME
+	// breaks send-keys whenever Resume/FreshRestart rename it or another
+	// topic happens to share the same basename.
 	if winfo.ID != "" {
 		sess.TmuxWindow = winfo.ID
+		if err := m.store.UpdateSessionTmuxWindow(sessionID, winfo.ID); err != nil {
+			m.logger.Warn("update tmux_window failed", "error", err)
+		}
 	}
 	if err := m.store.UpdateSessionPID(sessionID, int64(winfo.PID)); err != nil {
 		m.logger.Warn("update pid failed", "error", err)
@@ -276,7 +283,7 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 		resumeArgs = append(resumeArgs, "--model", topic.ClaudeModel.String)
 	}
 
-	windowName := sanitizeWindowName(filepath.Base(sess.WorkspacePath)) + "-r"
+	windowName := windowNameForWorkspace(sess.WorkspacePath) + "-r"
 	m.logger.Info("resuming session", "session_id", sessionID, "claude_session", claudeSessionID)
 
 	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, sess.WorkspacePath, m.claudeBin, resumeArgs, nil)
@@ -287,9 +294,14 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 		return nil, fmt.Errorf("resume new-window: %w", err)
 	}
 
-	// Update window info
+	// Update window info. Resume gives the new pane a "<base>-r" name; we
+	// store the stable @N pane id instead so ForwardMessage can find it
+	// regardless of how tmux deduplicates names across topics.
 	if winfo.ID != "" {
 		sess.TmuxWindow = winfo.ID
+		if err := m.store.UpdateSessionTmuxWindow(sessionID, winfo.ID); err != nil {
+			m.logger.Warn("update tmux_window on resume failed", "error", err)
+		}
 	}
 	if err := m.store.UpdateSessionPID(sessionID, int64(winfo.PID)); err != nil {
 		m.logger.Warn("update pid on resume", "error", err)
@@ -402,6 +414,22 @@ func sanitizeWindowName(name string) string {
 	return name
 }
 
+// windowNameForWorkspace builds the tmux window name for a workspace path. It
+// joins the parent directory and basename so that two topics whose workspaces
+// share a basename (e.g. `.../ccgram/general` and `.../hongbot-group/general`)
+// don't collide on a duplicate "general" window — a collision tmux allows but
+// that made it impossible to disambiguate panes by name. We still persist the
+// stable @N pane id to the DB after window creation; the human-readable name
+// is purely cosmetic but should still be unique per topic.
+func windowNameForWorkspace(workspacePath string) string {
+	base := filepath.Base(workspacePath)
+	parent := filepath.Base(filepath.Dir(workspacePath))
+	if parent == "" || parent == "." || parent == "/" || parent == "workspace" {
+		return sanitizeWindowName(base)
+	}
+	return sanitizeWindowName(parent + "-" + base)
+}
+
 // FreshRestart archives the current session and creates a fresh session for the same topic.
 // If summary is non-empty, it is sent as the first message to the new Claude session.
 func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary string, chatID, threadID int64) (*store.Session, error) {
@@ -434,7 +462,7 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 
 	// 4. Create new session record (same topic_id, same workspace)
 	newID := uuid.New().String()
-	windowName := sanitizeWindowName(filepath.Base(oldSess.WorkspacePath))
+	windowName := windowNameForWorkspace(oldSess.WorkspacePath)
 	newSess := &store.Session{
 		ID:             newID,
 		TopicID:        oldSess.TopicID,
@@ -461,8 +489,14 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 		}
 		return nil, fmt.Errorf("tmux new-window: %w", err)
 	}
+	// Persist the @N pane id so ForwardMessage targets the live pane (same
+	// reasoning as Spawn — the windowName here is a basename that can collide
+	// across topics).
 	if winfo.ID != "" {
 		newSess.TmuxWindow = winfo.ID
+		if err := m.store.UpdateSessionTmuxWindow(newID, winfo.ID); err != nil {
+			m.logger.Warn("update tmux_window on fresh restart failed", "error", err)
+		}
 	}
 	if err := m.store.UpdateSessionPID(newID, int64(winfo.PID)); err != nil {
 		m.logger.Warn("update pid failed", "error", err)
