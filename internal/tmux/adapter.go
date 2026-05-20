@@ -154,14 +154,33 @@ func (a *Adapter) KillWindow(target string) error {
 }
 
 // SendKeys sends text to the target pane using literal mode, then presses Enter.
+//
+// The Enter is delayed after the literal text. Claude Code's TUI ingests
+// keystrokes asynchronously; on a long or multi-line message the Enter would
+// otherwise race ahead of the still-arriving text and the message is left
+// unsent in the input box (looks like "no response"). The delay scales with the
+// message so short single-line sends stay snappy.
 func (a *Adapter) SendKeys(target, text string) error {
 	if _, err := a.run("send-keys", "-t", target, "-l", text); err != nil {
 		return fmt.Errorf("send-keys text %s: %w", target, err)
 	}
+	time.Sleep(submitDelay(text))
 	if _, err := a.run("send-keys", "-t", target, "Enter"); err != nil {
 		return fmt.Errorf("send-keys enter %s: %w", target, err)
 	}
 	return nil
+}
+
+// submitDelay returns how long to wait between the literal text and the Enter,
+// scaled by line count and length, capped at 1s.
+func submitDelay(text string) time.Duration {
+	d := 80*time.Millisecond +
+		time.Duration(strings.Count(text, "\n"))*40*time.Millisecond +
+		time.Duration(len(text)/200)*20*time.Millisecond
+	if d > time.Second {
+		d = time.Second
+	}
+	return d
 }
 
 // ListWindows returns all windows in the given session.
