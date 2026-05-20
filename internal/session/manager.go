@@ -292,7 +292,9 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	return nil
 }
 
-// Resume attempts to resume a crashed/stopped/failed session using claude --resume.
+// Resume attempts to resume a crashed/hibernated session using claude --resume,
+// restoring the full conversation transcript. Allowed source states are
+// governed by the state machine (crashed/hibernated → resuming).
 func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session, error) {
 	sess, err := m.store.SessionByID(sessionID)
 	if err != nil {
