@@ -38,6 +38,17 @@ func DefaultContextConfig() ContextConfig {
 	}
 }
 
+// OutboxConfig holds settings for the outbox file-delivery watcher.
+type OutboxConfig struct {
+	// TTLSec is how long a delivered file is kept before deletion (seconds).
+	TTLSec int64 `toml:"ttl_sec"`
+}
+
+// DefaultOutboxConfig returns sensible defaults for the outbox watcher.
+func DefaultOutboxConfig() OutboxConfig {
+	return OutboxConfig{TTLSec: 600}
+}
+
 // TmuxConfig holds tmux-related configuration from tgcc.toml.
 type TmuxConfig struct {
 	SessionName string `toml:"session_name"`
@@ -95,6 +106,7 @@ type Config struct {
 	Claude    ClaudeConfig
 	Workspace WorkspaceConfig
 	Spawn     SpawnConfig
+	Outbox    OutboxConfig
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
@@ -105,6 +117,7 @@ type tomlFile struct {
 	Claude    ClaudeConfig        `toml:"claude"`
 	Workspace WorkspaceConfig     `toml:"workspace"`
 	Spawn     SpawnConfig         `toml:"spawn"`
+	Outbox    OutboxConfig        `toml:"outbox"`
 }
 
 // Load reads .env from the binary directory and returns parsed Config.
@@ -157,6 +170,7 @@ func Load() (*Config, error) {
 		TgccDir:          tgccDir,
 		Context:          DefaultContextConfig(),
 		Honcho:           honcho.DefaultHonchoConfig(),
+		Outbox:           DefaultOutboxConfig(),
 	}
 
 	if err := loadTOML(cfg.TgccTomlPath, cfg); err != nil && !os.IsNotExist(err) {
@@ -242,6 +256,10 @@ func loadTOML(path string, cfg *Config) error {
 	// Merge Workspace
 	if len(tf.Workspace.Roots) > 0 {
 		cfg.Workspace.Roots = tf.Workspace.Roots
+	}
+	// Merge Outbox
+	if tf.Outbox.TTLSec > 0 {
+		cfg.Outbox.TTLSec = tf.Outbox.TTLSec
 	}
 	// Merge Spawn env. Last writer wins so the toml file overrides anything
 	// previously seeded into cfg.Spawn.Env (today nothing seeds it, but keeps

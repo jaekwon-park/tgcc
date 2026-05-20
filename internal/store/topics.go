@@ -128,6 +128,39 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	return t, nil
 }
 
+// TopicsWithWorkspace returns every topic that has a workspace_path set. Used
+// by the outbox watcher to scan each topic's <workspace>/outbox/ directory.
+func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
+	rows, err := s.DB.Query(
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at
+		 FROM topics WHERE workspace_path IS NOT NULL AND workspace_path != ''`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var topics []*Topic
+	for rows.Next() {
+		var workspace sql.NullString
+		var honchoSession sql.NullString
+		var ctxOverrides sql.NullString
+		t := &Topic{}
+		if err := rows.Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt); err != nil {
+			return nil, err
+		}
+		if workspace.Valid {
+			t.WorkspacePath = workspace.String
+		}
+		t.honchoSessionID = honchoSession
+		if ctxOverrides.Valid {
+			t.ContextOverrides = ctxOverrides.String
+		}
+		topics = append(topics, t)
+	}
+	return topics, rows.Err()
+}
+
 // UpdateTopicRequireMention sets the require_mention flag for a topic.
 func (s *Store) UpdateTopicRequireMention(topicID int64, require bool) error {
 	_, err := s.DB.Exec(`UPDATE topics SET require_mention = ? WHERE id = ?`, require, topicID)
