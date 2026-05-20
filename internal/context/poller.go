@@ -33,10 +33,11 @@ var activePollStatuses = []string{"active", "idle", "compacting", "resuming"}
 
 // Poller tails active session transcripts and relays new assistant text to Telegram.
 type Poller struct {
-	store  *store.Store
-	sender *bot.Sender
-	logger *slog.Logger
-	home   string
+	store     *store.Store
+	sender    *bot.Sender
+	logger    *slog.Logger
+	typingMgr *bot.TypingManager
+	home      string
 
 	// fileMTimes caches the last-seen mtime per session id so unchanged files
 	// are skipped without a read. Keyed by tgcc session id.
@@ -44,7 +45,7 @@ type Poller struct {
 }
 
 // NewPoller creates a transcript poller.
-func NewPoller(st *store.Store, sender *bot.Sender, logger *slog.Logger) *Poller {
+func NewPoller(st *store.Store, sender *bot.Sender, typingMgr *bot.TypingManager, logger *slog.Logger) *Poller {
 	if logger == nil {
 		logger = slog.Default()
 	}
@@ -52,10 +53,23 @@ func NewPoller(st *store.Store, sender *bot.Sender, logger *slog.Logger) *Poller
 	return &Poller{
 		store:      st,
 		sender:     sender,
+		typingMgr:  typingMgr,
 		logger:     logger,
 		home:       home,
 		fileMTimes: make(map[string]int64),
 	}
+}
+
+// resumeArtifacts are assistant texts Claude Code emits on `--resume` for the
+// synthetic "Continue from where you left off." continuation. They are not
+// real responses to user input and must not be relayed to Telegram.
+var resumeArtifacts = map[string]bool{
+	"No response requested.": true,
+}
+
+// isRelayableText reports whether an assistant text should be forwarded.
+func isRelayableText(text string) bool {
+	return !resumeArtifacts[strings.TrimSpace(text)]
 }
 
 // Start runs the poll loop until ctx is cancelled.
@@ -139,6 +153,16 @@ func (p *Poller) pollSession(ctx context.Context, sess *store.Session) {
 	}
 	p.fileMTimes[sess.ID] = mtime
 
+	// Transcript grew (tool calls, reasoning, or text) → Claude is actively
+	// working. Heartbeat the thinking bubble so it stays "생각 중" rather than
+	// flipping to "응답 지연".
+	grew := newOffset > lastOffset
+	if grew && p.typingMgr != nil {
+		if topic, terr := p.store.TopicByID(sess.TopicID); terr == nil && topic != nil {
+			p.typingMgr.Heartbeat(topic.ChatID, topic.ThreadID)
+		}
+	}
+
 	if len(texts) == 0 {
 		// Advance the offset even when only non-text entries (tool calls,
 		// system records) were appended, so we don't re-scan them forever.
@@ -156,7 +180,11 @@ func (p *Poller) pollSession(ctx context.Context, sess *store.Session) {
 		return
 	}
 
+	relayed := 0
 	for _, text := range texts {
+		if !isRelayableText(text) {
+			continue // skip resume artifacts ("No response requested.")
+		}
 		for _, chunk := range splitMessage(text, telegramMaxMessageLen) {
 			p.sender.Enqueue(bot.OutgoingMsg{
 				ChatID:   topic.ChatID,
@@ -164,12 +192,20 @@ func (p *Poller) pollSession(ctx context.Context, sess *store.Session) {
 				Text:     chunk,
 			})
 		}
+		relayed++
+	}
+
+	// Response delivered — stop the "typing…" indicator for this topic.
+	if relayed > 0 && p.typingMgr != nil {
+		p.typingMgr.Clear(topic.ChatID, topic.ThreadID)
 	}
 
 	if err := p.store.UpsertMessageOffset(sess.ID, fmt.Sprintf("%d", newOffset)); err != nil {
 		p.logger.Warn("poller: update offset failed", "session_id", sess.ID, "error", err)
 	}
-	p.logger.Info("poller: relayed messages", "session_id", sess.ID, "count", len(texts), "offset", newOffset)
+	if relayed > 0 {
+		p.logger.Info("poller: relayed messages", "session_id", sess.ID, "count", relayed, "offset", newOffset)
+	}
 }
 
 // transcriptPath derives the JSONL transcript path for a session. Prefers the

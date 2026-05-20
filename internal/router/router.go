@@ -38,11 +38,12 @@ type Router struct {
 	exeDir       string
 	botClient    *bot.Client
 	botUsername  string // for @mention detection in require_mention topics
+	typingMgr    *bot.TypingManager
 }
 
 // NewRouter creates a new Router.
-func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient, groupConfigs []config.GroupConfig, tgccTomlPath, exeDir string, botClient *bot.Client, botUsername string) *Router {
-	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient, groupConfigs: groupConfigs, tgccTomlPath: tgccTomlPath, exeDir: exeDir, botClient: botClient, botUsername: botUsername}
+func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient, groupConfigs []config.GroupConfig, tgccTomlPath, exeDir string, botClient *bot.Client, botUsername string, typingMgr *bot.TypingManager) *Router {
+	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient, groupConfigs: groupConfigs, tgccTomlPath: tgccTomlPath, exeDir: exeDir, botClient: botClient, botUsername: botUsername, typingMgr: typingMgr}
 }
 
 // Route dispatches an incoming message from an allowed user to the appropriate handler.
@@ -266,16 +267,12 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		return err
 	}
 
-	// Acknowledge the forward so the user sees Claude received the message
-	// even before the (potentially long) turn finishes via the Stop hook.
-	// Claude Code's Notification hook only fires for specific events (permission
-	// prompts, etc.), so without this ack the topic looks frozen between input
-	// and response.
-	r.sender.Enqueue(bot.OutgoingMsg{
-		ChatID:   chat.ID,
-		ThreadID: threadID,
-		Text:     "💭 처리 중...",
-	})
+	// Show a live "typing…" indicator instead of a static "처리 중" message.
+	// The poller clears it when Claude's response is relayed. This gives the
+	// "it's working" feedback without leaving a stale text message behind.
+	if r.typingMgr != nil {
+		r.typingMgr.Ping(chat.ID, threadID)
+	}
 
 	return nil
 }
