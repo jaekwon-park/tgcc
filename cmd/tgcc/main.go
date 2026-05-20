@@ -26,6 +26,7 @@ import (
 	tmuxctx "github.com/jaekwon-park/tgcc/internal/context"
 	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/hook"
+	"github.com/jaekwon-park/tgcc/internal/outbox"
 	"github.com/jaekwon-park/tgcc/internal/router"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -397,6 +398,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
 	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
+
+	// 7c-2. Outbox watcher — deliver files agents drop in <workspace>/outbox/
+	// to the bound Telegram topic.
+	outboxWatcher := outbox.NewWatcher(st, client, cfg.Outbox, logger)
+	go outboxWatcher.Start(ctx)
 
 	// 7d. Transcript poller — primary response relay. Tails each active
 	// session's transcript every 2s and forwards new assistant messages to
