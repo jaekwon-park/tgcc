@@ -47,6 +47,16 @@ type Message struct {
 	MessageThreadID   int64              `json:"message_thread_id,omitempty"`
 	IsTopicMessage    bool               `json:"is_topic_message,omitempty"`
 	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
+	Entities          []MessageEntity    `json:"entities,omitempty"`
+	ReplyToMessage    *Message           `json:"reply_to_message,omitempty"`
+}
+
+// MessageEntity is a special entity in a text message (mentions, commands, etc.).
+type MessageEntity struct {
+	Type   string `json:"type"`   // "mention", "text_mention", "bot_command", ...
+	Offset int    `json:"offset"` // UTF-16 code unit offset
+	Length int    `json:"length"` // UTF-16 code unit length
+	User   *User  `json:"user,omitempty"`
 }
 
 // User represents a Telegram user.
@@ -63,6 +73,20 @@ type Chat struct {
 	Type    string `json:"type"` // "private", "group", "supergroup"
 	Title   string `json:"title,omitempty"`
 	IsForum bool   `json:"is_forum,omitempty"`
+}
+
+// GetMe returns the bot's own account (used to learn the bot username for
+// @mention detection).
+func (c *Client) GetMe(ctx context.Context) (*User, error) {
+	raw, err := c.apiRequest(ctx, "getMe", map[string]interface{}{})
+	if err != nil {
+		return nil, fmt.Errorf("getMe request failed: %w", err)
+	}
+	u := &User{}
+	if err := json.Unmarshal(raw, u); err != nil {
+		return nil, fmt.Errorf("decode getMe result: %w", err)
+	}
+	return u, nil
 }
 
 // GetUpdates fetches new updates using long-polling.

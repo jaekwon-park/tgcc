@@ -37,11 +37,12 @@ type Router struct {
 	tgccTomlPath string
 	exeDir       string
 	botClient    *bot.Client
+	botUsername  string // for @mention detection in require_mention topics
 }
 
 // NewRouter creates a new Router.
-func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient, groupConfigs []config.GroupConfig, tgccTomlPath, exeDir string, botClient *bot.Client) *Router {
-	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient, groupConfigs: groupConfigs, tgccTomlPath: tgccTomlPath, exeDir: exeDir, botClient: botClient}
+func NewRouter(st *store.Store, logger *slog.Logger, sender *bot.Sender, guard *acl.Guard, pairingMgr *acl.PairingManager, mgr *session.Manager, ctxMon *tmuxctx.Monitor, honchoClient *honcho.HonchoClient, groupConfigs []config.GroupConfig, tgccTomlPath, exeDir string, botClient *bot.Client, botUsername string) *Router {
+	return &Router{store: st, logger: logger, sender: sender, guard: guard, pairingMgr: pairingMgr, mgr: mgr, ctxMon: ctxMon, honchoClient: honchoClient, groupConfigs: groupConfigs, tgccTomlPath: tgccTomlPath, exeDir: exeDir, botClient: botClient, botUsername: botUsername}
 }
 
 // Route dispatches an incoming message from an allowed user to the appropriate handler.
@@ -118,6 +119,28 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 	return nil
 }
 
+// botAddressed reports whether a message is directed at the bot — either an
+// @mention of the bot's username or a reply to one of the bot's own messages.
+// Used to gate require_mention topics.
+func (r *Router) botAddressed(msg *bot.Message) bool {
+	if msg == nil {
+		return false
+	}
+	// Reply to a message the bot sent.
+	if rt := msg.ReplyToMessage; rt != nil && rt.From != nil && rt.From.IsBot {
+		if r.botUsername == "" || strings.EqualFold(rt.From.Username, r.botUsername) {
+			return true
+		}
+	}
+	// @mention of the bot username in the text.
+	if r.botUsername != "" {
+		if strings.Contains(strings.ToLower(msg.Text), "@"+strings.ToLower(r.botUsername)) {
+			return true
+		}
+	}
+	return false
+}
+
 // handlePlainMessage forwards non-command text to the active Claude session for this topic.
 func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user *store.User) error {
 	if user == nil {
@@ -136,6 +159,14 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	topic, err := r.ensureTopic(ctx, chat.ID, threadID, "")
 	if err != nil {
 		return fmt.Errorf("ensure topic: %w", err)
+	}
+
+	// require_mention gate: in these topics, only act on messages that
+	// @mention the bot or reply to one of its messages. Everything else is
+	// silently ignored so the bot can coexist with human chatter. Slash
+	// commands bypass this (handled in handleCommand, not here).
+	if topic.RequireMention && !r.botAddressed(update.Message) {
+		return nil
 	}
 
 	// Find active session for this topic
