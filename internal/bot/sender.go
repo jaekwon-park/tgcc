@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
@@ -13,6 +14,7 @@ type OutgoingMsg struct {
 	ThreadID     int64
 	Text         string
 	ReplyToMsgID int64
+	Retries      int // number of retry attempts for 429 rate limits
 }
 
 // Sender queues outgoing messages and sends them respecting Telegram rate limits.
@@ -58,7 +60,38 @@ func (s *Sender) Start(ctx context.Context) error {
 				return nil
 			}
 			if _, err := s.client.SendMessage(ctx, msg.ChatID, msg.Text, msg.ReplyToMsgID, msg.ThreadID); err != nil {
-				s.logger.Error("sendMessage failed", "error", err, "chat_id", msg.ChatID, "thread_id", msg.ThreadID)
+				var retryErr *RetryAfterError
+				if errors.As(err, &retryErr) {
+					if msg.Retries < 3 {
+						msg.Retries++
+						s.logger.Warn("telegram rate limited, retrying",
+							"retry_after", retryErr.After,
+							"retries", msg.Retries,
+							"chat_id", msg.ChatID,
+							"thread_id", msg.ThreadID,
+						)
+						go func() {
+							time.Sleep(retryErr.After)
+							select {
+							case s.queue <- msg:
+							default:
+								s.logger.Error("retry failed: send queue full, dropping message",
+									"chat_id", msg.ChatID,
+									"thread_id", msg.ThreadID,
+								)
+							}
+						}()
+					} else {
+						s.logger.Error("max retries exceeded, dropping message",
+							"error", err,
+							"retries", msg.Retries,
+							"chat_id", msg.ChatID,
+							"thread_id", msg.ThreadID,
+						)
+					}
+				} else {
+					s.logger.Error("sendMessage failed", "error", err, "chat_id", msg.ChatID, "thread_id", msg.ThreadID)
+				}
 			}
 		}
 	}
