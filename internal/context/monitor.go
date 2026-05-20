@@ -118,9 +118,10 @@ func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath stri
 
 	m.checkThresholds(ctx, session, chatID, threadID)
 
-	if err := RelayResponse(ctx, m.store, m.sender, m.logger, sessionID, transcriptPath); err != nil {
-		m.logger.Warn("relay response failed", "session_id", sessionID, "error", err)
-	}
+	// Response relay is handled by the transcript Poller (poller.go), not here.
+	// The Stop hook only drives context-size tracking and compaction now —
+	// relaying from the hook forwarded just the last message per turn and
+	// raced with concurrent hooks on the shared offset.
 	return nil
 }
 
