@@ -179,6 +179,16 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 		case <-ctx.Done():
 			return
 		}
+		// Inject prior Honcho context BEFORE marking active. ForwardMessage is
+		// gated on the active state, so the user's first message lands after
+		// this — preserving order (context first, then the new prompt).
+		if mem := m.loadHonchoContext(context.Background(), topicID); mem != "" {
+			if err := m.adapter.SendKeys(sess.TmuxWindow, mem); err != nil {
+				m.logger.Warn("honcho context inject on spawn failed", "session_id", sessionID, "error", err)
+			} else {
+				m.logger.Info("honcho context injected on spawn", "session_id", sessionID)
+			}
+		}
 		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusSpawning), string(StatusActive)); cerr != nil {
 			m.logger.Error("update status to active", "error", cerr)
 		}
@@ -212,6 +222,10 @@ func (m *Manager) Kill(ctx context.Context, sessionID string) error {
 	if err := m.store.UpdateSessionStatus(sessionID, string(StatusStopping)); err != nil {
 		return err
 	}
+
+	// Persist the conversation to Honcho before destroying the session so a
+	// later /new on this topic can recover the context via loadHonchoContext.
+	m.saveTranscriptToHoncho(ctx, sess)
 
 	// Kill the tmux window (target is the session itself or window)
 	target := sess.TmuxWindow
@@ -249,6 +263,10 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	if err := m.store.UpdateSessionStatus(sessionID, string(StatusStopping)); err != nil {
 		return err
 	}
+
+	// Persist the conversation to Honcho before exit so a later /new on this
+	// topic can recover the context via loadHonchoContext.
+	m.saveTranscriptToHoncho(ctx, sess)
 
 	// Send exit command to claude
 	target := sess.TmuxWindow
@@ -566,10 +584,51 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	return newSess, nil
 }
 
+// deriveTranscriptPath reconstructs the Claude Code transcript path from a
+// session's workspace + claude_session_id when the hook hasn't recorded one
+// (Claude Code lays out ~/.claude/projects/<cwd-with-slashes-as-dashes>/<id>.jsonl).
+func deriveTranscriptPath(sess *store.Session) string {
+	if sess == nil || sess.ClaudeSessionID == "" || sess.WorkspacePath == "" {
+		return ""
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	encoded := strings.ReplaceAll(sess.WorkspacePath, "/", "-")
+	return filepath.Join(home, ".claude", "projects", encoded, sess.ClaudeSessionID+".jsonl")
+}
+
+// loadHonchoContext fetches the topic's accumulated Honcho memory so it can be
+// injected as the first message of a freshly spawned session, giving
+// continuity across /stop→/new and crash-fresh-spawn. Returns "" when Honcho
+// is disabled or has no memory for the topic.
+func (m *Manager) loadHonchoContext(ctx context.Context, topicID int64) string {
+	if m.honchoClient == nil || !m.honchoClient.IsEnabled() {
+		return ""
+	}
+	topic, err := m.store.TopicByID(topicID)
+	if err != nil || topic == nil {
+		return ""
+	}
+	honchoSessionID := topic.HonchoSessionID()
+	if honchoSessionID == "" {
+		return ""
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	mem, err := m.honchoClient.GetRepresentation(loadCtx, honchoSessionID)
+	if err != nil || strings.TrimSpace(mem) == "" {
+		return ""
+	}
+	return "[이전 세션 맥락 — Honcho 장기 기억]\n" + mem +
+		"\n\n위 맥락을 참고만 하고, 이 메시지에는 응답하지 마세요. 다음 사용자 메시지를 기다리세요."
+}
+
 // saveTranscriptToHoncho writes the full assistant/user conversation from the
-// session's transcript to Honcho before the session is destroyed by
-// FreshRestart. The new Claude can then pull this back via
-// HonchoClient.BuildResumeContext on the next spawn.
+// session's transcript to Honcho before the session is destroyed (FreshRestart,
+// Stop, Kill). The next session can pull this back via loadHonchoContext /
+// BuildResumeContext.
 //
 // Best-effort: every error is logged at WARN and ignored — the restart path
 // must not block on Honcho availability. No-op when Honcho is disabled, the
@@ -579,13 +638,20 @@ func (m *Manager) saveTranscriptToHoncho(ctx context.Context, sess *store.Sessio
 	if m.honchoClient == nil || !m.honchoClient.IsEnabled() {
 		return
 	}
-	if sess == nil || sess.TranscriptPath == "" {
+	if sess == nil {
+		return
+	}
+	transcriptPath := sess.TranscriptPath
+	if transcriptPath == "" {
+		transcriptPath = deriveTranscriptPath(sess)
+	}
+	if transcriptPath == "" {
 		return
 	}
 
 	topic, err := m.store.TopicByID(sess.TopicID)
 	if err != nil || topic == nil {
-		m.logger.Warn("honcho pre-restart save: topic lookup failed",
+		m.logger.Warn("honcho save: topic lookup failed",
 			"session_id", sess.ID, "topic_id", sess.TopicID, "error", err)
 		return
 	}
@@ -594,7 +660,7 @@ func (m *Manager) saveTranscriptToHoncho(ctx context.Context, sess *store.Sessio
 		return
 	}
 
-	text, err := m.extractFullConversation(sess.TranscriptPath)
+	text, err := m.extractFullConversation(transcriptPath)
 	if err != nil {
 		m.logger.Warn("honcho pre-restart save: extract failed",
 			"session_id", sess.ID, "transcript", sess.TranscriptPath, "error", err)
