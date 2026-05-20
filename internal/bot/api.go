@@ -106,6 +106,34 @@ func (c *Client) SendChatAction(ctx context.Context, chatID int64, threadID int6
 	return nil
 }
 
+// EditMessageText edits an existing message's text (used for the animated
+// "thinking" bubble). parse_mode is left default (plain) since the bubble is
+// short status text.
+func (c *Client) EditMessageText(ctx context.Context, chatID, messageID int64, text string) error {
+	params := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+		"text":       text,
+	}
+	if _, err := c.apiRequest(ctx, "editMessageText", params); err != nil {
+		return fmt.Errorf("editMessageText request failed: %w", err)
+	}
+	return nil
+}
+
+// DeleteMessage removes a message (used to clear the thinking bubble before
+// the real response is sent).
+func (c *Client) DeleteMessage(ctx context.Context, chatID, messageID int64) error {
+	params := map[string]interface{}{
+		"chat_id":    chatID,
+		"message_id": messageID,
+	}
+	if _, err := c.apiRequest(ctx, "deleteMessage", params); err != nil {
+		return fmt.Errorf("deleteMessage request failed: %w", err)
+	}
+	return nil
+}
+
 // GetUpdates fetches new updates using long-polling.
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	params := map[string]interface{}{

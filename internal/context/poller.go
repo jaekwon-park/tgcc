@@ -153,6 +153,16 @@ func (p *Poller) pollSession(ctx context.Context, sess *store.Session) {
 	}
 	p.fileMTimes[sess.ID] = mtime
 
+	// Transcript grew (tool calls, reasoning, or text) → Claude is actively
+	// working. Heartbeat the thinking bubble so it stays "생각 중" rather than
+	// flipping to "응답 지연".
+	grew := newOffset > lastOffset
+	if grew && p.typingMgr != nil {
+		if topic, terr := p.store.TopicByID(sess.TopicID); terr == nil && topic != nil {
+			p.typingMgr.Heartbeat(topic.ChatID, topic.ThreadID)
+		}
+	}
+
 	if len(texts) == 0 {
 		// Advance the offset even when only non-text entries (tool calls,
 		// system records) were appended, so we don't re-scan them forever.
