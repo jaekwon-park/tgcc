@@ -117,7 +117,8 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("hook stop received", "session_id", sessionID, "transcript_path", transcriptPath)
 
 	// Return 200 immediately so Claude Code is not blocked waiting for relay.
-	// OnStopHook (DB updates + RelayResponse) runs in a goroutine.
+	// OnStopHook (context-size tracking + compaction) runs in a goroutine.
+	// Response relaying is handled separately by the transcript Poller.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 

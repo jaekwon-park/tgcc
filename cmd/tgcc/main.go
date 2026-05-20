@@ -377,6 +377,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
 
+	// 7d. Transcript poller — primary response relay. Tails each active
+	// session's transcript every 2s and forwards new assistant messages to
+	// Telegram (replaces the fragile Stop-hook relay).
+	poller := tmuxctx.NewPoller(st, sender, logger)
+	go poller.Start(ctx)
+
 	// 8. Router
 	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
 	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client)
