@@ -18,6 +18,16 @@ import (
 
 const telegramBaseURL = "https://api.telegram.org"
 
+// RetryAfterError is returned when Telegram API responds with 429 Too Many Requests.
+// The After field indicates how long to wait before retrying.
+type RetryAfterError struct {
+	After time.Duration
+}
+
+func (e *RetryAfterError) Error() string {
+	return fmt.Sprintf("telegram api error: 429 Too Many Requests (retry after %.0fs)", e.After.Seconds())
+}
+
 // Client is a thin wrapper around Telegram Bot API.
 type Client struct {
 	token      string
@@ -243,11 +253,22 @@ func (c *Client) SendDocument(ctx context.Context, chatID, threadID int64, fileP
 		OK          bool            `json:"ok"`
 		Result      json.RawMessage `json:"result"`
 		Description string          `json:"description"`
+		ErrorCode   int             `json:"error_code"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(respBody, &envelope); err != nil {
 		return nil, fmt.Errorf("decode sendDocument response: %w", err)
 	}
 	if !envelope.OK {
+		if envelope.ErrorCode == 429 {
+			after := time.Duration(envelope.Parameters.RetryAfter) * time.Second
+			if after == 0 {
+				after = time.Second // 429 without retry_after: 1s fallback
+			}
+			return nil, &RetryAfterError{After: after}
+		}
 		return nil, fmt.Errorf("telegram api error: %s", envelope.Description)
 	}
 
@@ -288,11 +309,22 @@ func (c *Client) apiRequest(ctx context.Context, method string, params map[strin
 		OK          bool            `json:"ok"`
 		Result      json.RawMessage `json:"result"`
 		Description string          `json:"description"`
+		ErrorCode   int             `json:"error_code"`
+		Parameters  struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.Unmarshal(respBody, &envelope); err != nil {
 		return nil, fmt.Errorf("decode api response: %w", err)
 	}
 	if !envelope.OK {
+		if envelope.ErrorCode == 429 {
+			after := time.Duration(envelope.Parameters.RetryAfter) * time.Second
+			if after == 0 {
+				after = time.Second // 429 without retry_after: 1s fallback
+			}
+			return nil, &RetryAfterError{After: after}
+		}
 		if envelope.Description == "" {
 			return nil, fmt.Errorf("telegram api error: ok=false")
 		}
