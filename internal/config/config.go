@@ -55,6 +55,16 @@ type WorkspaceConfig struct {
 	Roots []string `toml:"roots"`
 }
 
+// SpawnConfig holds settings applied to every Claude session tgcc spawns.
+// Env is merged on top of the bot's inherited process environment when tmux
+// new-window runs `claude`, so it can extend PATH (e.g. to reach ~/.local/bin
+// for rtk, npm-global tools) or inject any other variable the workspace needs.
+// Per-spawn keys like TGCC_CORRELATION_ID are added on top of this map and
+// always win.
+type SpawnConfig struct {
+	Env map[string]string `toml:"env"`
+}
+
 // Config holds all tgcc configuration values.
 type Config struct {
 	// Required
@@ -84,6 +94,7 @@ type Config struct {
 	Tmux      TmuxConfig
 	Claude    ClaudeConfig
 	Workspace WorkspaceConfig
+	Spawn     SpawnConfig
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
@@ -93,6 +104,7 @@ type tomlFile struct {
 	Tmux      TmuxConfig          `toml:"tmux"`
 	Claude    ClaudeConfig        `toml:"claude"`
 	Workspace WorkspaceConfig     `toml:"workspace"`
+	Spawn     SpawnConfig         `toml:"spawn"`
 }
 
 // Load reads .env from the binary directory and returns parsed Config.
@@ -230,6 +242,17 @@ func loadTOML(path string, cfg *Config) error {
 	// Merge Workspace
 	if len(tf.Workspace.Roots) > 0 {
 		cfg.Workspace.Roots = tf.Workspace.Roots
+	}
+	// Merge Spawn env. Last writer wins so the toml file overrides anything
+	// previously seeded into cfg.Spawn.Env (today nothing seeds it, but keeps
+	// the merge consistent with the other sections above).
+	if len(tf.Spawn.Env) > 0 {
+		if cfg.Spawn.Env == nil {
+			cfg.Spawn.Env = make(map[string]string, len(tf.Spawn.Env))
+		}
+		for k, v := range tf.Spawn.Env {
+			cfg.Spawn.Env[k] = v
+		}
 	}
 	return nil
 }

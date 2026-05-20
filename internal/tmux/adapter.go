@@ -95,6 +95,11 @@ func (a *Adapter) NewWindow(session, name, cmd string) (*WindowInfo, error) {
 
 // NewWindowWithEnv creates a new tmux window with explicit working directory,
 // environment variables, and properly shell-escaped command arguments.
+//
+// PATH is wrapped via the GNU `env` command instead of tmux's `-e` flag
+// because tmux's `-e` is silently overridden for PATH (verified empirically:
+// tmux merges PATH from the client and ignores the per-pane override). All
+// other env vars still go through `-e`, which tmux honors normally.
 func (a *Adapter) NewWindowWithEnv(session, name, dir, command string, args []string, env map[string]string) (*WindowInfo, error) {
 	tmuxArgs := []string{
 		"new-window",
@@ -105,13 +110,30 @@ func (a *Adapter) NewWindowWithEnv(session, name, dir, command string, args []st
 	if dir != "" {
 		tmuxArgs = append(tmuxArgs, "-c", dir)
 	}
+	// Split env into PATH (needs `env` wrapping) and the rest (tmux -e).
+	pathVal, hasPath := env["PATH"]
 	for k, v := range env {
+		if k == "PATH" {
+			continue
+		}
 		tmuxArgs = append(tmuxArgs, "-e", k+"="+v)
 	}
 	if command != "" {
-		shellCmd := shellSingleQuote(command)
-		for _, arg := range args {
-			shellCmd += " " + shellSingleQuote(arg)
+		// Build the shell-quoted command chain. When PATH override is requested
+		// we prepend `env PATH='<val>' <cmd> <args...>` so the resulting
+		// execution chain is: tmux → bash -c → env → claude.
+		var parts []string
+		if hasPath {
+			parts = append(parts, "env", "PATH="+pathVal)
+		}
+		parts = append(parts, command)
+		parts = append(parts, args...)
+		shellCmd := ""
+		for i, p := range parts {
+			if i > 0 {
+				shellCmd += " "
+			}
+			shellCmd += shellSingleQuote(p)
 		}
 		tmuxArgs = append(tmuxArgs, shellCmd)
 	}

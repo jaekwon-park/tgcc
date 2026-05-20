@@ -30,12 +30,17 @@ type Manager struct {
 	honchoClient   *honcho.HonchoClient
 	tmuxSession    string
 	claudeBin      string
-	workspaceRoot  string   // default root for /workspaces scanning
-	workspaceRoots []string // from tgcc.toml workspace.roots
+	workspaceRoot  string            // default root for /workspaces scanning
+	workspaceRoots []string          // from tgcc.toml workspace.roots
+	spawnEnv       map[string]string // extra env injected into every spawned Claude
 }
 
 // NewManager creates a new session Manager.
-func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, honchoClient *honcho.HonchoClient, tmuxSession, claudeBin, workspaceRoot string, workspaceRoots []string) *Manager {
+//
+// spawnEnv is merged into the tmux new-window environment for every Spawn,
+// Resume, and FreshRestart. Per-spawn keys (TGCC_CORRELATION_ID) always win
+// over this map. Pass nil for the legacy "no extra env" behavior.
+func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sender *bot.Sender, honchoClient *honcho.HonchoClient, tmuxSession, claudeBin, workspaceRoot string, workspaceRoots []string, spawnEnv map[string]string) *Manager {
 	if workspaceRoot == "" {
 		homeDir, _ := os.UserHomeDir()
 		workspaceRoot = homeDir
@@ -51,7 +56,25 @@ func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sen
 		claudeBin:      claudeBin,
 		workspaceRoot:  workspaceRoot,
 		workspaceRoots: workspaceRoots,
+		spawnEnv:       spawnEnv,
 	}
+}
+
+// buildSpawnEnv merges the configured spawn env with the per-spawn overrides.
+// Per-spawn keys win — this lets TGCC_CORRELATION_ID (and any future per-call
+// values) take precedence over anything seeded from tgcc.toml [spawn.env].
+func (m *Manager) buildSpawnEnv(perSpawn map[string]string) map[string]string {
+	if len(m.spawnEnv) == 0 && len(perSpawn) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(m.spawnEnv)+len(perSpawn))
+	for k, v := range m.spawnEnv {
+		out[k] = v
+	}
+	for k, v := range perSpawn {
+		out[k] = v
+	}
+	return out
 }
 
 // Spawn creates a new Claude Code session for the given topic and workspace.
@@ -115,9 +138,9 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	if model != "" {
 		args = append(args, "--model", model)
 	}
-	env := map[string]string{
+	env := m.buildSpawnEnv(map[string]string{
 		"TGCC_CORRELATION_ID": sessionID,
-	}
+	})
 	claudeCmd := m.claudeBin + " " + strings.Join(args, " ")
 	m.logger.Info("spawning session", "session_id", sessionID, "window", windowName, "cmd", claudeCmd)
 
@@ -286,7 +309,7 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 	windowName := windowNameForWorkspace(sess.WorkspacePath) + "-r"
 	m.logger.Info("resuming session", "session_id", sessionID, "claude_session", claudeSessionID)
 
-	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, sess.WorkspacePath, m.claudeBin, resumeArgs, nil)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, sess.WorkspacePath, m.claudeBin, resumeArgs, m.buildSpawnEnv(nil))
 	if err != nil {
 		if cerr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); cerr != nil {
 			m.logger.Warn("update status to failed on resume error", "error", cerr)
@@ -482,7 +505,7 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 	if topic, err2 := m.store.TopicByID(oldSess.TopicID); err2 == nil && topic != nil && topic.ClaudeModel.Valid {
 		freshArgs = append(freshArgs, "--model", topic.ClaudeModel.String)
 	}
-	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, oldSess.WorkspacePath, m.claudeBin, freshArgs, nil)
+	winfo, err := m.adapter.NewWindowWithEnv(m.tmuxSession, windowName, oldSess.WorkspacePath, m.claudeBin, freshArgs, m.buildSpawnEnv(nil))
 	if err != nil {
 		if cerr := m.store.UpdateSessionStatus(newID, string(StatusFailed)); cerr != nil {
 			m.logger.Warn("update status to failed on fresh restart error", "error", cerr)
