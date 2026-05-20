@@ -264,12 +264,16 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 		return nil, err
 	}
 
-	// Build claude --resume command
+	// Build claude --resume command. Must include --dangerously-skip-permissions
+	// just like Spawn — without it the resumed session reverts to interactive
+	// permission prompts ("Do you want to proceed?") for every Bash/tool call,
+	// which blocks the pane indefinitely since the operator can't see or answer
+	// the prompt through Telegram.
 	claudeSessionID := sess.ClaudeSessionID
 	if claudeSessionID == "" {
 		claudeSessionID = sess.ID
 	}
-	resumeArgs := []string{"--resume", claudeSessionID}
+	resumeArgs := []string{"--resume", claudeSessionID, "--dangerously-skip-permissions"}
 	// Append model flag if topic has one configured
 	topic, topicErr := m.store.TopicByID(sess.TopicID)
 	if topicErr == nil && topic != nil && topic.ClaudeModel.Valid {
