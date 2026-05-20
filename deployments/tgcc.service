@@ -30,13 +30,21 @@ TimeoutStopSec=10
 # (Claude version cache), ~/.cache, and Node's npm/npx temp dirs. Enabling
 # ProtectHome=read-only + an explicit ReadWritePaths list caused Claude's TUI to
 # silently fail to render (process running, pane blank, no transcript ever
-# written). ProtectSystem=strict + NoNewPrivileges + PrivateTmp still constrain
-# the bot itself; tighten ProtectHome again only after auditing every path Claude
-# Code touches at startup and per-spawn.
+# written). ProtectSystem=strict + NoNewPrivileges still constrain the bot
+# itself; tighten ProtectHome again only after auditing every path Claude Code
+# touches at startup and per-spawn.
+#
+# PrivateTmp is intentionally OFF. With KillMode=process, tmux and its claude
+# children survive a tgcc restart — but systemd tears down the old instance's
+# private /tmp on restart, leaving the surviving claude processes pointing at a
+# dead /tmp. Newly spawned claude then hangs during startup because it cannot
+# extract its node native modules to /tmp. Sharing the host /tmp keeps it stable
+# across restarts. /tmp must be in ReadWritePaths or ProtectSystem=strict would
+# mount it read-only (breaking hooks and temp-file writes).
 NoNewPrivileges=yes
-PrivateTmp=yes
+PrivateTmp=no
 ProtectSystem=strict
-ReadWritePaths=/opt/tgcc/bin /opt/tgcc/run /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
+ReadWritePaths=/tmp /opt/tgcc/bin /opt/tgcc/run /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
 
 # Logging
 StandardOutput=journal
