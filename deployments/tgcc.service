@@ -8,12 +8,19 @@ Type=simple
 User=insainty
 WorkingDirectory=/home/insainty
 EnvironmentFile=/opt/tgcc/bin/.env
+# Place the tmux control socket outside PrivateTmp so spawned tmux/claude
+# sessions survive a tgcc restart (KillMode=process) and the freshly started
+# tgcc can re-attach to them. A dedicated dir (not /tmp) also keeps tgcc's tmux
+# server isolated from the user's own tmux sessions.
+Environment=TMUX_TMPDIR=/opt/tgcc/run
 ExecStart=/opt/tgcc/bin/tgcc serve
 Restart=always
 RestartSec=5
 
-# Graceful shutdown
-KillMode=mixed
+# Graceful shutdown. KillMode=process so only the bot process is signalled on
+# stop/restart — tmux and its child claude sessions keep running and are
+# reconciled (re-attached) by the new tgcc instance instead of being SIGKILLed.
+KillMode=process
 KillSignal=SIGTERM
 TimeoutStopSec=10
 
@@ -29,7 +36,7 @@ TimeoutStopSec=10
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/tgcc/bin /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
+ReadWritePaths=/opt/tgcc/bin /opt/tgcc/run /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
 
 # Logging
 StandardOutput=journal
