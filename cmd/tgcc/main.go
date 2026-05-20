@@ -358,6 +358,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}()
 
+	// Typing indicator: shows "typing…" in topics while Claude works, cleared
+	// by the poller when the response is relayed.
+	typingMgr := bot.NewTypingManager(client, logger)
+	go typingMgr.Start(ctx)
+
 	// 4. Reconciler + Supervisor (M3)
 	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
 	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
@@ -396,12 +401,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// 7d. Transcript poller — primary response relay. Tails each active
 	// session's transcript every 2s and forwards new assistant messages to
 	// Telegram (replaces the fragile Stop-hook relay).
-	poller := tmuxctx.NewPoller(st, sender, logger)
+	poller := tmuxctx.NewPoller(st, sender, typingMgr, logger)
 	go poller.Start(ctx)
 
 	// 8. Router
 	exeDir := filepath.Dir(cfg.DBPath) // exe dir from DB path
-	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client, botUsername)
+	r := router.NewRouter(st, logger, sender, guard, pairingMgr, sessionMgr, ctxMon, honchoClient, groupConfigs, cfg.TgccTomlPath, exeDir, client, botUsername, typingMgr)
 
 	// 9. Bot listener (long-polling)
 	listener := bot.NewListener(client, logger)

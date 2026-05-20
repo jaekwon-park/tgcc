@@ -89,6 +89,23 @@ func (c *Client) GetMe(ctx context.Context) (*User, error) {
 	return u, nil
 }
 
+// SendChatAction shows a transient status (e.g. "typing…") in the chat/topic.
+// Telegram auto-expires it after ~5s, so callers refresh periodically while
+// work is in progress. Best-effort.
+func (c *Client) SendChatAction(ctx context.Context, chatID int64, threadID int64, action string) error {
+	params := map[string]interface{}{
+		"chat_id": chatID,
+		"action":  action,
+	}
+	if threadID > 0 {
+		params["message_thread_id"] = threadID
+	}
+	if _, err := c.apiRequest(ctx, "sendChatAction", params); err != nil {
+		return fmt.Errorf("sendChatAction request failed: %w", err)
+	}
+	return nil
+}
+
 // GetUpdates fetches new updates using long-polling.
 func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]Update, error) {
 	params := map[string]interface{}{
