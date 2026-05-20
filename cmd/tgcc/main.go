@@ -357,7 +357,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
-	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, honchoClient, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots)
+	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, honchoClient, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots, cfg.Spawn.Env)
 
 	// 4c. Context lifecycle monitor (M6)
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
