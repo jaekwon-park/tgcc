@@ -195,6 +195,27 @@ tgcc version       # 버전 확인
 | `/whoami` | 본인 정보 |
 | `/help` | 명령 도움말 |
 
+### 7-1. Outbox — 파일을 텔레그램으로 전송
+
+에이전트(Claude)가 작업 결과 파일(로그, 리포트, 스크린샷 등)을 텔레그램으로 보내려면
+자기 작업 디렉토리(cwd) 아래 `outbox/`에 파일을 놓기만 하면 됩니다. tgcc가 2초마다
+각 토픽 workspace의 `outbox/`를 스캔해 해당 토픽 스레드로 문서를 전송합니다.
+
+```bash
+# 에이전트 세션 안에서 (cwd = 토픽 workspace)
+mkdir -p outbox
+cp /path/to/report.csv outbox/
+# → tgcc가 자동으로 해당 토픽에 sendDocument
+```
+
+- 디렉토리 키가 따로 없습니다 — workspace가 토픽과 1:1이라 `./outbox/`면 충분합니다.
+- 전송된 파일은 `[outbox] ttl_sec`(기본 600초) 후 자동 삭제됩니다.
+
+```toml
+[outbox]
+ttl_sec = 600
+```
+
 ### 8. systemd 서비스 등록 (Linux)
 
 ```bash

@@ -7,7 +7,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -181,6 +185,75 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, text string, rep
 	msg := &Message{}
 	if err := json.Unmarshal(raw, msg); err != nil {
 		return nil, fmt.Errorf("decode sendMessage result: %w", err)
+	}
+	return msg, nil
+}
+
+// SendDocument uploads a file to a chat/topic via multipart/form-data. Used by
+// the outbox watcher to deliver files an agent drops in its workspace outbox.
+// apiRequest can't be reused here since it serialises params as JSON, whereas
+// sendDocument needs a streamed multipart body.
+func (c *Client) SendDocument(ctx context.Context, chatID, threadID int64, filePath string) (*Message, error) {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("open document %s: %w", filePath, err)
+	}
+	defer f.Close()
+
+	body := &bytes.Buffer{}
+	writer := multipart.NewWriter(body)
+	if err := writer.WriteField("chat_id", strconv.FormatInt(chatID, 10)); err != nil {
+		return nil, fmt.Errorf("write chat_id field: %w", err)
+	}
+	if threadID > 0 {
+		if err := writer.WriteField("message_thread_id", strconv.FormatInt(threadID, 10)); err != nil {
+			return nil, fmt.Errorf("write message_thread_id field: %w", err)
+		}
+	}
+	part, err := writer.CreateFormFile("document", filepath.Base(filePath))
+	if err != nil {
+		return nil, fmt.Errorf("create form file: %w", err)
+	}
+	if _, err := io.Copy(part, f); err != nil {
+		return nil, fmt.Errorf("copy document body: %w", err)
+	}
+	if err := writer.Close(); err != nil {
+		return nil, fmt.Errorf("close multipart writer: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/bot%s/sendDocument", c.baseURL, c.token)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, body)
+	if err != nil {
+		return nil, fmt.Errorf("create sendDocument request: %w", err)
+	}
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("perform sendDocument request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read sendDocument response: %w", err)
+	}
+
+	var envelope struct {
+		OK          bool            `json:"ok"`
+		Result      json.RawMessage `json:"result"`
+		Description string          `json:"description"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return nil, fmt.Errorf("decode sendDocument response: %w", err)
+	}
+	if !envelope.OK {
+		return nil, fmt.Errorf("telegram api error: %s", envelope.Description)
+	}
+
+	msg := &Message{}
+	if err := json.Unmarshal(envelope.Result, msg); err != nil {
+		return nil, fmt.Errorf("decode sendDocument result: %w", err)
 	}
 	return msg, nil
 }

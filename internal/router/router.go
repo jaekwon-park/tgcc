@@ -230,26 +230,50 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	}
 
 	if sess.Status == "hibernated" {
-		r.sender.Enqueue(bot.OutgoingMsg{
-			ChatID:   chat.ID,
-			ThreadID: threadID,
-			Text:     "💭 메모리 복구 중...",
-		})
-		summary := ""
-		if sess.TranscriptPath != "" {
-			summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
-		}
-		honchoSessionID := topic.HonchoSessionID()
-		summary = r.honchoClient.BuildResumeContext(ctx, honchoSessionID, summary)
-		if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chat.ID, threadID); err != nil {
-			r.logger.Error("hibernate recovery failed", "error", err)
+		// Prefer `claude --resume` so the full conversation transcript is
+		// restored rather than a 10-turn summary. This needs claude_session_id
+		// (captured by the session-start hook). Without it, or if resume fails,
+		// fall back to the summary-based fresh restart.
+		if sess.ClaudeSessionID != "" {
 			r.sender.Enqueue(bot.OutgoingMsg{
 				ChatID:   chat.ID,
 				ThreadID: threadID,
-				Text:     fmt.Sprintf("❌ 복구 실패: %v", err),
+				Text:     "💭 세션 복구 중 (대화 내역 복원)...",
 			})
+			resumed, rerr := r.mgr.Resume(ctx, sess.ID)
+			if rerr != nil {
+				r.logger.Error("hibernate resume failed, falling back to fresh restart", "error", rerr, "session_id", sess.ID)
+				r.freshRestartFromHibernate(ctx, sess, topic, chat.ID, threadID)
+				return nil
+			}
+			sess = resumed
+			// Resume flips resuming→active ~2s later in a goroutine. Poll until
+			// active so the message that woke the session isn't dropped on a
+			// pane that is still loading the resumed transcript.
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				s, gerr := r.store.SessionByID(sess.ID)
+				if gerr == nil && s != nil && s.Status == "active" {
+					sess = s
+					break
+				}
+				select {
+				case <-time.After(100 * time.Millisecond):
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			// Fall through to ForwardMessage so the waking message reaches the
+			// resumed conversation.
+		} else {
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     "💭 메모리 복구 중...",
+			})
+			r.freshRestartFromHibernate(ctx, sess, topic, chat.ID, threadID)
+			return nil
 		}
-		return nil
 	}
 
 	// Forward message to claude
@@ -275,6 +299,26 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	}
 
 	return nil
+}
+
+// freshRestartFromHibernate rebuilds a hibernated session from a summary when
+// `claude --resume` is unavailable (missing claude_session_id) or fails. The
+// new session starts fresh with the last-10-turn summary plus Honcho long-term
+// context injected — it does not restore the full transcript.
+func (r *Router) freshRestartFromHibernate(ctx context.Context, sess *store.Session, topic *store.Topic, chatID, threadID int64) {
+	summary := ""
+	if sess.TranscriptPath != "" {
+		summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
+	}
+	summary = r.honchoClient.BuildResumeContext(ctx, topic.HonchoSessionID(), summary)
+	if _, err := r.mgr.FreshRestart(ctx, sess.ID, summary, chatID, threadID); err != nil {
+		r.logger.Error("hibernate recovery failed", "error", err)
+		r.sender.Enqueue(bot.OutgoingMsg{
+			ChatID:   chatID,
+			ThreadID: threadID,
+			Text:     fmt.Sprintf("❌ 복구 실패: %v", err),
+		})
+	}
 }
 
 // ============================================================================
