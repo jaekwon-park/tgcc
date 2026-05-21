@@ -186,7 +186,7 @@ func (s *Supervisor) hibernate(ctx context.Context) {
 		s.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   topic.ChatID,
 			ThreadID: topic.ThreadID,
-			Text:     "💤 30분 무활동 — 세션 정리됨. 메시지 보내면 재시작",
+			Text:     s.cfg.HibernateMsg,
 		})
 	}
 }
