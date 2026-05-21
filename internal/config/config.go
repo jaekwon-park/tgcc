@@ -15,12 +15,13 @@ import (
 
 // ContextConfig holds context lifecycle thresholds.
 type ContextConfig struct {
-	SoftWarnBytes     int64 `toml:"soft_warn_bytes"`
-	HardCompactBytes  int64 `toml:"hard_compact_bytes"`
-	FreshRestartBytes int64 `toml:"fresh_restart_bytes"`
-	SoftWarnTurns     int64 `toml:"soft_warn_turns"`
-	HardCompactTurns  int64 `toml:"hard_compact_turns"`
-	IdleHibernateMin  int64 `toml:"idle_hibernate_min"`
+	SoftWarnBytes     int64  `toml:"soft_warn_bytes"`
+	HardCompactBytes  int64  `toml:"hard_compact_bytes"`
+	FreshRestartBytes int64  `toml:"fresh_restart_bytes"`
+	SoftWarnTurns     int64  `toml:"soft_warn_turns"`
+	HardCompactTurns  int64  `toml:"hard_compact_turns"`
+	IdleHibernateMin  int64  `toml:"idle_hibernate_min"`
+	HibernateMsg      string `toml:"hibernate_msg"`
 }
 
 // DefaultContextConfig returns sensible defaults for context lifecycle.
@@ -35,6 +36,7 @@ func DefaultContextConfig() ContextConfig {
 		SoftWarnTurns:     60,
 		HardCompactTurns:  100,
 		IdleHibernateMin:  30,
+		HibernateMsg:      "💤 30분 무활동 — 세션 정리됨. 메시지 보내면 재시작",
 	}
 }
 
@@ -227,6 +229,9 @@ func loadTOML(path string, cfg *Config) error {
 	}
 	if tf.Context.IdleHibernateMin > 0 {
 		cfg.Context.IdleHibernateMin = tf.Context.IdleHibernateMin
+	}
+	if tf.Context.HibernateMsg != "" {
+		cfg.Context.HibernateMsg = tf.Context.HibernateMsg
 	}
 
 	// Merge non-default Honcho fields.
