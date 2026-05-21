@@ -1,0 +1,35 @@
+# tgcc.toml — tgcc configuration example
+# Copy to your binary directory and customize as needed.
+
+[context]
+soft_warn_bytes     = 2250000
+hard_compact_bytes  = 2550000
+fresh_restart_bytes = 2850000
+soft_warn_turns     = 60
+hard_compact_turns  = 100
+idle_hibernate_min  = 30
+# hibernate_msg: notification sent to Telegram when a session is hibernated.
+# Default (when unset): "💤 30분 무활동 — 세션 정리됨. 메시지 보내면 재시작"
+hibernate_msg       = "💤 30분 무활동 — 세션 정리됨. 메시지 보내면 재시작"
+
+[honcho]
+enabled   = true
+url       = "http://localhost:8000"
+workspace = "work"
+
+[outbox]
+ttl_sec = 600
+
+[[group]]
+chat_id = -1001234567890
+
+  [[group.topic]]
+  thread_id         = 283
+  honcho_session_id = "topic-infra"
+  workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+
+  [[group.topic]]
+  thread_id         = 145
+  honcho_session_id = "topic-dev"
+  workspace_path    = "/opt/tgcc/workspace/ccgram/dev"
+  model             = "claude-sonnet-4-6"
