@@ -20,12 +20,20 @@ type ContextMonitor interface {
 	OnStopHook(ctx context.Context, sessionID, transcriptPath string) error
 }
 
+// ActivationCallback is called after a session is successfully activated
+// (claude_session_id set, status set to active). The Manager uses this to
+// inject prior Honcho context into the newly active session.
+type ActivationCallback interface {
+	OnSessionActivated(ctx context.Context, sessionID string)
+}
+
 // Handlers processes different hook event types.
 type Handlers struct {
-	logger  *slog.Logger
-	store   *store.Store
-	sender  *bot.Sender
-	monitor ContextMonitor
+	logger     *slog.Logger
+	store      *store.Store
+	sender     *bot.Sender
+	monitor    ContextMonitor
+	onActivate ActivationCallback
 }
 
 // NewHandlers creates new hook Handlers.
@@ -34,6 +42,12 @@ func NewHandlers(logger *slog.Logger, st *store.Store, sender *bot.Sender, monit
 		logger = slog.Default()
 	}
 	return &Handlers{logger: logger, store: st, sender: sender, monitor: monitor}
+}
+
+// SetActivationCallback registers a callback to be invoked after a session is
+// activated via the session-start hook.
+func (h *Handlers) SetActivationCallback(cb ActivationCallback) {
+	h.onActivate = cb
 }
 
 // HandleSessionStart handles POST /hooks/session-start from Claude Code.
@@ -72,12 +86,16 @@ func (h *Handlers) HandleSessionStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fall back to cwd matching if correlation_id didn't find a match
+	// Fall back to cwd+null-claude-id matching if correlation_id didn't find a match.
+	// Fix: use claude_session_id IS NULL instead of specific statuses.
+	// The old SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"}) had
+	// a race condition: the 2-second timer could transition spawning→active before
+	// the hook fires, causing the lookup to miss and leaving claude_session_id as NULL.
 	if sess == nil && cwd != "" && h.store != nil {
 		var lookupErr error
-		sess, lookupErr = h.store.SessionByWorkspaceAndStatus(cwd, []string{"pending", "spawning"})
+		sess, lookupErr = h.store.SessionByWorkspaceNullClaudeID(cwd)
 		if lookupErr != nil {
-			h.logger.Warn("hook session-start: lookup session by workspace failed", "error", lookupErr, "cwd", cwd)
+			h.logger.Warn("hook session-start: lookup session by workspace+null claude_id failed", "error", lookupErr, "cwd", cwd)
 		}
 	}
 
@@ -89,6 +107,11 @@ func (h *Handlers) HandleSessionStart(w http.ResponseWriter, r *http.Request) {
 			h.logger.Warn("hook session-start: update status to active failed", "error", err)
 		}
 		h.logger.Info("hook session-start: session activated", "tgcc_session_id", sess.ID, "claude_session_id", sessionID, "correlation_id", correlationID)
+
+		// Inject prior Honcho context into the newly active session asynchronously.
+		if h.onActivate != nil {
+			go h.onActivate.OnSessionActivated(context.Background(), sess.ID)
+		}
 	} else if cwd != "" {
 		h.logger.Warn("hook session-start: no pending/spawning session found", "cwd", cwd, "correlation_id", correlationID)
 	}

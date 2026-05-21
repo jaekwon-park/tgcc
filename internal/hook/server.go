@@ -63,6 +63,11 @@ func (s *Server) SetSessionProvider(p SessionProvider) {
 	s.sessions = p
 }
 
+// SetActivationCallback delegates to the underlying Handlers.
+func (s *Server) SetActivationCallback(cb ActivationCallback) {
+	s.handlers.SetActivationCallback(cb)
+}
+
 // Start begins listening on the configured port.
 func (s *Server) Start(ctx context.Context) error {
 	addr := fmt.Sprintf("127.0.0.1:%d", s.port)

@@ -169,28 +169,17 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	}
 	sess.PID = int64(winfo.PID)
 
-	// 8. Wait briefly for claude to initialize, then transition to active
-	// (Hook-based activation comes in M4; for M2 we allow a brief startup window)
-	// M4 fix: conditional update prevents stale timer from overwriting a status
-	// that has already changed (e.g. the hook set it to crashed/failed).
+	// 8. Spawn timeout watchdog: if session-start hook never fires within 60s,
+	// mark the session as failed so the user isn't left with a stuck spawning state.
+	// Uses context.Background() to avoid cancellation when the caller's request
+	// context ends — the watchdog must survive the Spawn() call itself.
 	go func() {
-		select {
-		case <-time.After(2 * time.Second):
-		case <-ctx.Done():
-			return
-		}
-		// Inject prior Honcho context BEFORE marking active. ForwardMessage is
-		// gated on the active state, so the user's first message lands after
-		// this — preserving order (context first, then the new prompt).
-		if mem := m.loadHonchoContext(context.Background(), topicID); mem != "" {
-			if err := m.adapter.SendKeys(sess.TmuxWindow, mem); err != nil {
-				m.logger.Warn("honcho context inject on spawn failed", "session_id", sessionID, "error", err)
-			} else {
-				m.logger.Info("honcho context injected on spawn", "session_id", sessionID)
-			}
-		}
-		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusSpawning), string(StatusActive)); cerr != nil {
-			m.logger.Error("update status to active", "error", cerr)
+		<-time.After(60 * time.Second)
+		// Session-start hook never fired within 60s — mark as failed.
+		if cerr := m.store.UpdateSessionStatusIf(sessionID, string(StatusSpawning), string(StatusFailed)); cerr != nil {
+			m.logger.Error("spawn timeout: update status to failed", "session_id", sessionID, "error", cerr)
+		} else {
+			m.logger.Warn("spawn timeout: session marked as failed (hook never fired)", "session_id", sessionID)
 		}
 	}()
 
@@ -395,6 +384,24 @@ func (m *Manager) GetSession(sessionID string) (*store.Session, error) {
 // GetSessionByTopic returns the session for a topic.
 func (m *Manager) GetSessionByTopic(topicID int64) (*store.Session, error) {
 	return m.store.SessionByTopicID(topicID)
+}
+
+// OnSessionActivated is called by the session-start hook handler after setting
+// the session to active. It injects prior Honcho context into the tmux window
+// so the session has continuity from previous conversations on the same topic.
+func (m *Manager) OnSessionActivated(ctx context.Context, sessionID string) {
+	sess, err := m.store.SessionByID(sessionID)
+	if err != nil || sess == nil {
+		m.logger.Warn("OnSessionActivated: session not found", "session_id", sessionID, "error", err)
+		return
+	}
+	if mem := m.loadHonchoContext(ctx, sess.TopicID); mem != "" {
+		if err := m.adapter.SendKeys(sess.TmuxWindow, mem); err != nil {
+			m.logger.Warn("honcho context inject on activate failed", "session_id", sessionID, "error", err)
+		} else {
+			m.logger.Info("honcho context injected on activate", "session_id", sessionID)
+		}
+	}
 }
 
 // ActiveSessionCount returns the number of non-terminal sessions.

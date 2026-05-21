@@ -395,6 +395,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// Wire session provider to hook server for status queries
 	hookSrv.SetSessionProvider(sessionMgr)
 
+	// Register session activation callback: when the hook handler activates a
+	// spawning session, the Manager injects prior Honcho context into the tmux
+	// window so the new session can pick up long-term memory.
+	hookSrv.SetActivationCallback(sessionMgr)
+
 	// 7c. Supervisor (M3) — restart crashed sessions periodically
 	supervisor := session.NewSupervisor(st, sessionMgr, 0, cfg.Context, sender, honchoClient, logger)
 	go supervisor.Start(ctx)
