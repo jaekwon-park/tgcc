@@ -315,6 +315,18 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		}
 	}
 
+	// Build topic allowlist map from tgcc.toml for ACL Guard.
+	// Key: "chatID:threadID" → list of allowed user IDs.
+	topicAllowLists := make(map[string][]int64)
+	for _, gc := range groupConfigs {
+		for _, tc := range gc.Topics {
+			if len(tc.AllowUsers) > 0 {
+				key := strconv.FormatInt(gc.ChatID, 10) + ":" + strconv.FormatInt(tc.ThreadID, 10)
+				topicAllowLists[key] = tc.AllowUsers
+			}
+		}
+	}
+
 	// 2. Set defaults
 	tmuxBin := cfg.TmuxBin
 	if tmuxBin == "" {
@@ -370,7 +382,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		logger.Warn("reconciler run failed", "error", err)
 	}
 	// 6. ACL & pairing
-	guard := acl.NewGuard(st, logger)
+	guard := acl.NewGuard(st, logger, topicAllowLists)
 	pairingMgr := acl.NewPairingManager(st)
 
 	// 7a. Honcho client — created before session.Manager so FreshRestart can
