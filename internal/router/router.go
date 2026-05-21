@@ -100,6 +100,8 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 		return r.handleCtxStatus(ctx, update, user)
 	case "/refresh":
 		return r.handleRefresh(ctx, update, user)
+	case "/restart":
+		return r.handleRefresh(ctx, update, user)
 	// M9 squash + override commands
 	case "/squash":
 		return r.handleSquash(ctx, update, user, fields)
@@ -380,7 +382,7 @@ func (r *Router) handleHelp(ctx context.Context, update bot.Update, user *store.
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   update.Message.Chat.ID,
 		ThreadID: update.Message.MessageThreadID,
-		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/refresh — 세션 새로고침 (아카이브 후 새 세션)\n/squash N — 오래된 N턴 압축 (Honcho 필요)\n/ctxconfig soft_warn=N hard_compact=N — 토픽별 컨텍스트 임계치 설정\n/list-archived — 아카이브된 세션 목록\n/model — 현재 모델 확인\n/model <name> — 모델 변경 후 세션 재시작\n/help — 도움말\n/whoami — 본인 정보",
+		Text:     "/start — 봇 소개\n/pair — 페어링 코드 발급\n/register — 그룹 등록\n/new [workspace] — 새 세션 생성\n/resume — 세션 복구\n/stop — 세션 종료\n/kill — 강제 종료\n/status — 세션 상태\n/list — 활성 세션 목록\n/workspaces — 사용 가능한 디렉토리 목록\n/compact — 컨텍스트 정리\n/ctxstatus — 컨텍스트 상태 확인\n/refresh — 세션 새로고침 (아카이브 후 새 세션)\n/restart — /refresh와 동일\n/squash N — 오래된 N턴 압축 (Honcho 필요)\n/ctxconfig soft_warn=N hard_compact=N — 토픽별 컨텍스트 임계치 설정\n/list-archived — 아카이브된 세션 목록\n/model — 현재 모델 확인\n/model <name> — 모델 변경 후 세션 재시작\n/help — 도움말\n/whoami — 본인 정보",
 	})
 	return nil
 }

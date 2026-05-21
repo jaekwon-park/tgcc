@@ -147,7 +147,7 @@ func (m *Monitor) checkThresholds(ctx context.Context, session *store.Session, c
 			m.sender.Enqueue(bot.OutgoingMsg{
 				ChatID:   chatID,
 				ThreadID: threadID,
-				Text:     fmt.Sprintf("⚠️ 세션 컨텍스트 한계 도달 (compact %d회 완료). 수동 처리가 필요합니다.", session.CompactCount),
+				Text:     fmt.Sprintf("⚠️ 세션 컨텍스트 한계 도달 (compact %d회 완료). /refresh 로 세션을 초기화하세요.", session.CompactCount),
 			})
 			return
 		}
