@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
@@ -26,11 +28,17 @@ const (
 type Guard struct {
 	store  *store.Store
 	logger *slog.Logger
+	// topicAllowLists maps "chatID:threadID" → list of allowed user IDs.
+	// Empty list or missing key means all owners are allowed (backward compatible).
+	topicAllowLists map[string][]int64
 }
 
 // NewGuard creates a new ACL Guard.
-func NewGuard(st *store.Store, logger *slog.Logger) *Guard {
-	return &Guard{store: st, logger: logger}
+// topicAllowLists maps "chatID:threadID" → list of user IDs that are allowed
+// access to that specific topic. An empty list or missing key means all
+// owners can access (backward compatible).
+func NewGuard(st *store.Store, logger *slog.Logger, topicAllowLists map[string][]int64) *Guard {
+	return &Guard{store: st, logger: logger, topicAllowLists: topicAllowLists}
 }
 
 // Check evaluates an incoming Telegram Update against the ACL flow.
@@ -55,6 +63,22 @@ func (g *Guard) Check(ctx context.Context, update bot.Update) (Decision, *store.
 
 	if user.Role != "owner" {
 		return DenyRole, user
+	}
+
+	// Topic-level allowlist check. Only applies when the topic has allow_users
+	// configured in tgcc.toml. Empty list or missing key = all owners allowed.
+	if update.Message.Chat != nil {
+		topicKey := strconv.FormatInt(update.Message.Chat.ID, 10) + ":" + strconv.FormatInt(update.Message.MessageThreadID, 10)
+		if allowUsers, ok := g.topicAllowLists[topicKey]; ok && len(allowUsers) > 0 {
+			if !slices.Contains(allowUsers, userID) {
+				g.logger.Warn("user denied by topic allowlist",
+					"user_id", userID,
+					"chat_id", update.Message.Chat.ID,
+					"thread_id", update.Message.MessageThreadID,
+				)
+				return DenyRole, user
+			}
+		}
 	}
 
 	if update.Message.Chat != nil && update.Message.Chat.Type != "private" {

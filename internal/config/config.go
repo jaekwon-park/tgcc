@@ -336,6 +336,9 @@ type TopicConfig struct {
 	// RequireMention gates this topic: when true the bot only responds to
 	// messages that @mention it or reply to one of its messages.
 	RequireMention bool `toml:"require_mention"`
+	// AllowUsers restricts topic access to specific Telegram user IDs.
+	// When empty (nil), all owners (role=owner) can access the topic.
+	AllowUsers []int64 `toml:"allow_users"`
 }
 
 // GroupConfig represents a single [[group]] entry in tgcc.toml.
