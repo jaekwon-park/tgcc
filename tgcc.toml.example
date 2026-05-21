@@ -27,9 +27,13 @@ chat_id = -1001234567890
   thread_id         = 283
   honcho_session_id = "topic-infra"
   workspace_path    = "/opt/tgcc/workspace/ccgram/infra"
+  # allow_users: restrict this topic to specific Telegram user IDs.
+  # When empty (or omitted), all owners (role=owner) can access it.
+  # allow_users = [7255744379]
 
   [[group.topic]]
   thread_id         = 145
   honcho_session_id = "topic-dev"
   workspace_path    = "/opt/tgcc/workspace/ccgram/dev"
   model             = "claude-sonnet-4-6"
+  allow_users       = [7255744379]   # optional: restrict to listed user IDs
