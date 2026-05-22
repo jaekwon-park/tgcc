@@ -51,6 +51,23 @@ func DefaultOutboxConfig() OutboxConfig {
 	return OutboxConfig{TTLSec: 600}
 }
 
+// QueueConfig holds settings for the .notify-queue idle watcher.
+type QueueConfig struct {
+	// Enabled toggles the .notify-queue watcher on or off.
+	Enabled bool `toml:"enabled"`
+	// DebounceMs is the debounce time in milliseconds before injecting
+	// [queue-drain] after a write event. Default 200ms.
+	DebounceMs int64 `toml:"debounce_ms"`
+}
+
+// DefaultQueueConfig returns sensible defaults for the queue watcher.
+func DefaultQueueConfig() QueueConfig {
+	return QueueConfig{
+		Enabled:    true,
+		DebounceMs: 200,
+	}
+}
+
 // TmuxConfig holds tmux-related configuration from tgcc.toml.
 type TmuxConfig struct {
 	SessionName string `toml:"session_name"`
@@ -109,6 +126,14 @@ type Config struct {
 	Workspace WorkspaceConfig
 	Spawn     SpawnConfig
 	Outbox    OutboxConfig
+	Queue     QueueConfig
+}
+
+// queueTomlConfig is the TOML representation for the [queue] section.
+// Enabled uses *bool to distinguish "not set" (nil) from "explicitly false".
+type queueTomlConfig struct {
+	Enabled    *bool `toml:"enabled"`
+	DebounceMs int64 `toml:"debounce_ms"`
 }
 
 // tomlFile is the on-disk representation of tgcc.toml.
@@ -120,6 +145,7 @@ type tomlFile struct {
 	Workspace WorkspaceConfig     `toml:"workspace"`
 	Spawn     SpawnConfig         `toml:"spawn"`
 	Outbox    OutboxConfig        `toml:"outbox"`
+	Queue     queueTomlConfig     `toml:"queue"`
 }
 
 // Load reads .env from the binary directory and returns parsed Config.
@@ -173,6 +199,7 @@ func Load() (*Config, error) {
 		Context:          DefaultContextConfig(),
 		Honcho:           honcho.DefaultHonchoConfig(),
 		Outbox:           DefaultOutboxConfig(),
+		Queue:            DefaultQueueConfig(),
 	}
 
 	if err := loadTOML(cfg.TgccTomlPath, cfg); err != nil && !os.IsNotExist(err) {
@@ -265,6 +292,14 @@ func loadTOML(path string, cfg *Config) error {
 	// Merge Outbox
 	if tf.Outbox.TTLSec > 0 {
 		cfg.Outbox.TTLSec = tf.Outbox.TTLSec
+	}
+	// Merge Queue. Enabled is *bool to distinguish "not set" (nil) from
+	// "explicitly false", so toggling enabled=false in TOML actually works.
+	if tf.Queue.Enabled != nil {
+		cfg.Queue.Enabled = *tf.Queue.Enabled
+	}
+	if tf.Queue.DebounceMs > 0 {
+		cfg.Queue.DebounceMs = tf.Queue.DebounceMs
 	}
 	// Merge Spawn env. Last writer wins so the toml file overrides anything
 	// previously seeded into cfg.Spawn.Env (today nothing seeds it, but keeps
