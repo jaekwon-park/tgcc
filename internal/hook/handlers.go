@@ -122,6 +122,32 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 
+	// Transition session status active→idle so the .notify-queue watcher
+	// can detect when the leader is waiting for new input.
+	// Uses UpdateSessionStatusIf (CAS) to avoid overwriting a session that
+	// already received a new message via ForwardMessage and is back to active.
+	if h.store != nil {
+		sess, err := h.store.SessionByClaudeID(sessionID)
+		if err != nil {
+			h.logger.Warn("hook stop: lookup by claude_session_id failed", "error", err, "session_id", sessionID)
+		}
+		if sess == nil {
+			sess, err = h.store.SessionByID(sessionID)
+			if err != nil {
+				h.logger.Warn("hook stop: lookup by id failed", "error", err, "session_id", sessionID)
+			} else {
+				h.logger.Debug("hook stop: resolved via fallback tgcc ID (not claude_session_id)", "session_id", sessionID)
+			}
+		}
+		if sess != nil {
+			if err := h.store.UpdateSessionStatusIf(sess.ID, "active", "idle"); err != nil {
+				h.logger.Warn("hook stop: update status active→idle failed", "error", err, "session_id", sess.ID)
+			} else {
+				h.logger.Debug("hook stop: session transitioned active→idle", "session_id", sess.ID)
+			}
+		}
+	}
+
 	if h.monitor != nil {
 		monitor := h.monitor
 		logger := h.logger

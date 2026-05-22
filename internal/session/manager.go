@@ -383,6 +383,17 @@ func (m *Manager) ForwardMessage(ctx context.Context, sessionID string, text str
 		return fmt.Errorf("session is not active (status: %s)", sess.Status)
 	}
 
+	// Transition idle→active on first incoming message so the session is
+	// marked busy and the queue watcher won't inject duplicate triggers.
+	// Uses UpdateSessionStatusIf (CAS) to avoid race with concurrent
+	// ForwardMessage / Stop hook that may change status between the
+	// IsActive check above and the update below.
+	if err := m.store.UpdateSessionStatusIf(sessionID, string(StatusIdle), string(StatusActive)); err != nil {
+		m.logger.Warn("forwardmsg: transition idle→active failed",
+			"error", err, "session_id", sessionID)
+		// Don't fail the forward — message delivery is primary.
+	}
+
 	target := sess.TmuxWindow
 	return m.adapter.SendKeys(target, text)
 }
