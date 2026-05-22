@@ -398,7 +398,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
 
 	// 4b. Hook server — internal HTTP API + Claude Code hook receiver
-	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger, st, sender, ctxMon)
+	hookSrv := hook.NewServer(cfg.HookPort, cfg.HookToken, logger, st, sender, ctxMon, sessionMgr)
 	go func() {
 		if err := hookSrv.Start(ctx); err != nil {
 			logger.Error("hook server failed", "error", err)
