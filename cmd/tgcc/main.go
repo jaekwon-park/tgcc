@@ -27,6 +27,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/hook"
 	"github.com/jaekwon-park/tgcc/internal/outbox"
+	"github.com/jaekwon-park/tgcc/internal/queue"
 	"github.com/jaekwon-park/tgcc/internal/router"
 	"github.com/jaekwon-park/tgcc/internal/session"
 	"github.com/jaekwon-park/tgcc/internal/store"
@@ -415,6 +416,15 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// to the bound Telegram topic.
 	outboxWatcher := outbox.NewWatcher(st, client, cfg.Outbox, logger)
 	go outboxWatcher.Start(ctx)
+
+	// 7c-3. Queue watcher — monitors .notify-queue files in each topic
+	// workspace and injects [queue-drain] to wake idle leader sessions.
+	queueWatcher := queue.NewWatcher(st, sessionMgr, logger, cfg.Queue.DebounceMs, cfg.Queue.Enabled)
+	go func() {
+		if err := queueWatcher.Start(ctx); err != nil {
+			logger.Error("queue watcher failed", "error", err)
+		}
+	}()
 
 	// 7d. Transcript poller — primary response relay. Tails each active
 	// session's transcript every 2s and forwards new assistant messages to
