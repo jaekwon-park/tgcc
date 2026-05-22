@@ -20,20 +20,27 @@ type ContextMonitor interface {
 	OnStopHook(ctx context.Context, sessionID, transcriptPath string) error
 }
 
+// MessageForwarder injects a message into a running session.
+// Used by Stop hook to drain .notify-queue after transitioning to idle.
+type MessageForwarder interface {
+	ForwardMessage(ctx context.Context, sessionID string, text string) error
+}
+
 // Handlers processes different hook event types.
 type Handlers struct {
-	logger  *slog.Logger
-	store   *store.Store
-	sender  *bot.Sender
-	monitor ContextMonitor
+	logger    *slog.Logger
+	store     *store.Store
+	sender    *bot.Sender
+	monitor   ContextMonitor
+	forwarder MessageForwarder
 }
 
 // NewHandlers creates new hook Handlers.
-func NewHandlers(logger *slog.Logger, st *store.Store, sender *bot.Sender, monitor ContextMonitor) *Handlers {
+func NewHandlers(logger *slog.Logger, st *store.Store, sender *bot.Sender, monitor ContextMonitor, forwarder MessageForwarder) *Handlers {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Handlers{logger: logger, store: st, sender: sender, monitor: monitor}
+	return &Handlers{logger: logger, store: st, sender: sender, monitor: monitor, forwarder: forwarder}
 }
 
 // HandleSessionStart handles POST /hooks/session-start from Claude Code.
@@ -117,20 +124,94 @@ func (h *Handlers) HandleStop(w http.ResponseWriter, r *http.Request) {
 	h.logger.Info("hook stop received", "session_id", sessionID, "transcript_path", transcriptPath)
 
 	// Return 200 immediately so Claude Code is not blocked waiting for relay.
-	// OnStopHook (context-size tracking + compaction) runs in a goroutine.
-	// Response relaying is handled separately by the transcript Poller.
+	// All post-response work (status transition, queue drain, context monitor)
+	// runs in a goroutine to avoid blocking the HTTP handler.
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]bool{"ok": true})
 
-	if h.monitor != nil {
-		monitor := h.monitor
-		logger := h.logger
-		go func() {
-			if err := monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
-				logger.Warn("context monitor OnStopHook failed", "error", err)
-			}
-		}()
+	// Transition session status active→idle and drain .notify-queue if needed.
+	// Runs in a goroutine to avoid tail latency on the HTTP handler goroutine.
+	go h.handleStopAsync(r.Context(), sessionID, transcriptPath)
+}
+
+// handleStopAsync performs the post-response Stop hook work: session lookup,
+// active→idle transition, guaranteed queue drain, and context-monitor callback.
+func (h *Handlers) handleStopAsync(ctx context.Context, sessionID, transcriptPath string) {
+	if h.store == nil {
+		return
 	}
+
+	sess, err := h.store.SessionByClaudeID(sessionID)
+	if err != nil {
+		h.logger.Warn("hook stop: lookup by claude_session_id failed", "error", err, "session_id", sessionID)
+	}
+	if sess == nil {
+		sess, err = h.store.SessionByID(sessionID)
+		if err != nil {
+			h.logger.Warn("hook stop: lookup by id failed", "error", err, "session_id", sessionID)
+		} else {
+			h.logger.Debug("hook stop: resolved via fallback tgcc ID (not claude_session_id)", "session_id", sessionID)
+		}
+	}
+	if sess == nil {
+		return
+	}
+
+	// Transition active→idle (CAS) so the .notify-queue watcher can detect
+	// the leader is waiting for new input.
+	if err := h.store.UpdateSessionStatusIf(sess.ID, "active", "idle"); err != nil {
+		h.logger.Warn("hook stop: update status active→idle failed", "error", err, "session_id", sess.ID)
+	} else {
+		h.logger.Debug("hook stop: session transitioned active→idle", "session_id", sess.ID)
+
+		// Guaranteed queue drain: check .notify-queue now that the session
+		// is idle. This handles items that arrived while the session was
+		// busy — fsnotify skips those because the session wasn't idle, and
+		// the event never re-fires. The fsnotify watcher remains as a
+		// fast-path for items that arrive while already idle.
+		if h.maybeDrainQueue(ctx, sess) {
+			h.logger.Info("hook stop: queue drained on idle transition",
+				"session_id", sess.ID,
+				"workspace", sess.WorkspacePath,
+			)
+		}
+	}
+
+	// Context monitor (compaction tracking, etc.)
+	if h.monitor != nil {
+		if err := h.monitor.OnStopHook(context.Background(), sessionID, transcriptPath); err != nil {
+			h.logger.Warn("context monitor OnStopHook failed", "error", err)
+		}
+	}
+}
+
+// maybeDrainQueue checks whether the session's workspace has a non-empty
+// .notify-queue file and, if the forwarder is available, injects the
+// [queue-drain] trigger message. Returns true if a drain was attempted.
+func (h *Handlers) maybeDrainQueue(ctx context.Context, sess *store.Session) bool {
+	if h.forwarder == nil || sess == nil || sess.WorkspacePath == "" {
+		return false
+	}
+	queuePath := filepath.Join(sess.WorkspacePath, ".notify-queue")
+	info, err := os.Stat(queuePath)
+	if err != nil {
+		// File doesn't exist or can't be accessed — nothing to drain.
+		return false
+	}
+	if info.Size() == 0 {
+		return false
+	}
+	h.logger.Debug("hook stop: .notify-queue non-empty, injecting drain trigger",
+		"workspace", sess.WorkspacePath,
+		"queue_bytes", info.Size(),
+	)
+	if err := h.forwarder.ForwardMessage(ctx, sess.ID, "[queue-drain]"); err != nil {
+		h.logger.Warn("hook stop: queue drain ForwardMessage failed",
+			"error", err, "session_id", sess.ID,
+		)
+		return false
+	}
+	return true
 }
 
 // extractLastAssistantMessage reads a JSONL transcript and returns the content
