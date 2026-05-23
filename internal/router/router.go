@@ -135,9 +135,13 @@ func (r *Router) botAddressed(msg *bot.Message) bool {
 			return true
 		}
 	}
-	// @mention of the bot username in the text.
+	// @mention of the bot username in the text or caption.
 	if r.botUsername != "" {
-		if strings.Contains(strings.ToLower(msg.Text), "@"+strings.ToLower(r.botUsername)) {
+		haystack := strings.ToLower(msg.Text)
+		if haystack == "" {
+			haystack = strings.ToLower(msg.Caption)
+		}
+		if strings.Contains(haystack, "@"+strings.ToLower(r.botUsername)) {
 			return true
 		}
 	}
@@ -279,7 +283,32 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	}
 
 	// Forward message to claude
+	// Handle photo messages: extract the highest-resolution photo, download it,
+	// and build a text line that Claude can use to locate the file.
 	text := strings.TrimSpace(update.Message.Text)
+	caption := strings.TrimSpace(update.Message.Caption)
+
+	if len(update.Message.Photo) > 0 {
+		photo := update.Message.Photo[len(update.Message.Photo)-1]
+		imgPath, err := r.downloadTelegramFile(ctx, photo.FileID, topic.WorkspacePath)
+		if err != nil {
+			r.logger.Warn("photo download failed", "error", err)
+			if caption != "" {
+				text = "[이미지 다운로드 실패] " + caption
+			} else {
+				text = "[이미지 다운로드 실패]"
+			}
+		} else {
+			if caption != "" {
+				text = fmt.Sprintf("[이미지: %s]\n%s", imgPath, caption)
+			} else {
+				text = fmt.Sprintf("[이미지: %s]", imgPath)
+			}
+		}
+	} else if text == "" && caption != "" {
+		text = caption
+	}
+
 	if text == "" {
 		return nil
 	}
@@ -1397,6 +1426,40 @@ func (r *Router) handleListArchived(ctx context.Context, update bot.Update, user
 		Text:     sb.String(),
 	})
 	return nil
+}
+
+// downloadTelegramFile resolves a Telegram photo file_id to a local path.
+// The file is downloaded into <workspacePath>/tmp/ (or os.TempDir as
+// fallback). Callers are responsible for cleaning up the temporary file once
+// Claude has consumed it.
+func (r *Router) downloadTelegramFile(ctx context.Context, fileID, workspacePath string) (string, error) {
+	// Step 1 — ask Telegram where the file lives.
+	filePath, err := r.botClient.GetFile(ctx, fileID)
+	if err != nil {
+		return "", fmt.Errorf("getFile: %w", err)
+	}
+
+	// Step 2 — determine extension.  Default to .jpg for photos.
+	ext := filepath.Ext(filePath)
+	if ext == "" {
+		ext = ".jpg"
+	}
+
+	// Step 3 — choose destination directory.
+	var destDir string
+	if workspacePath != "" {
+		destDir = filepath.Join(workspacePath, "tmp")
+	} else {
+		destDir = os.TempDir()
+	}
+	destPath := filepath.Join(destDir, fileID+ext)
+
+	// Step 4 — download.
+	if err := r.botClient.DownloadFile(ctx, filePath, destPath); err != nil {
+		return "", fmt.Errorf("downloadFile: %w", err)
+	}
+
+	return destPath, nil
 }
 
 // ============================================================================
