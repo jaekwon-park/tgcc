@@ -58,6 +58,9 @@ type Message struct {
 	Chat              *Chat              `json:"chat"`
 	Date              int64              `json:"date"`
 	Text              string             `json:"text,omitempty"`
+	Caption           string             `json:"caption,omitempty"`
+	Photo             []PhotoSize        `json:"photo,omitempty"`
+	Document          *Document          `json:"document,omitempty"`
 	MessageThreadID   int64              `json:"message_thread_id,omitempty"`
 	IsTopicMessage    bool               `json:"is_topic_message,omitempty"`
 	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
@@ -71,6 +74,24 @@ type MessageEntity struct {
 	Offset int    `json:"offset"` // UTF-16 code unit offset
 	Length int    `json:"length"` // UTF-16 code unit length
 	User   *User  `json:"user,omitempty"`
+}
+
+// PhotoSize represents one size of a photo or file / sticker thumbnail.
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+// Document represents a general file (as opposed to photo, voice, etc.).
+type Document struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileName     string `json:"file_name,omitempty"`
+	MimeType     string `json:"mime_type,omitempty"`
+	FileSize     int64  `json:"file_size,omitempty"`
 }
 
 // User represents a Telegram user.
@@ -365,4 +386,62 @@ func (c *Client) GetForumTopicInfo(ctx context.Context, chatID int64, messageThr
 		return nil, fmt.Errorf("decode getForumTopicInfo result: %w", err)
 	}
 	return topic, nil
+}
+
+// GetFile returns the file_path for a given file_id.
+func (c *Client) GetFile(ctx context.Context, fileID string) (string, error) {
+	params := map[string]interface{}{
+		"file_id": fileID,
+	}
+	raw, err := c.apiRequest(ctx, "getFile", params)
+	if err != nil {
+		return "", fmt.Errorf("getFile request failed: %w", err)
+	}
+	var result struct {
+		FilePath string `json:"file_path"`
+	}
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("decode getFile result: %w", err)
+	}
+	return result.FilePath, nil
+}
+
+// DownloadFile downloads a Telegram file to destPath. A 20 MB limit is
+// enforced to prevent disk exhaustion from unexpectedly large files.
+func (c *Client) DownloadFile(ctx context.Context, filePath, destPath string) error {
+	url := fmt.Sprintf("%s/file/bot%s/%s", c.baseURL, c.token, filePath)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create download request: %w", err)
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("perform download request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("download failed: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("create dest dir: %w", err)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create dest file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, io.LimitReader(resp.Body, 20<<20)); err != nil {
+		// Remove partial file on write failure
+		_ = os.Remove(destPath)
+		return fmt.Errorf("write downloaded file: %w", err)
+	}
+
+	return nil
 }
