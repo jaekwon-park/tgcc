@@ -58,6 +58,9 @@ type Message struct {
 	Chat              *Chat              `json:"chat"`
 	Date              int64              `json:"date"`
 	Text              string             `json:"text,omitempty"`
+	Caption           string             `json:"caption,omitempty"`
+	Photo             []PhotoSize        `json:"photo,omitempty"`
+	Document          *Document          `json:"document,omitempty"`
 	MessageThreadID   int64              `json:"message_thread_id,omitempty"`
 	IsTopicMessage    bool               `json:"is_topic_message,omitempty"`
 	ForumTopicCreated *ForumTopicCreated `json:"forum_topic_created,omitempty"`
@@ -71,6 +74,25 @@ type MessageEntity struct {
 	Offset int    `json:"offset"` // UTF-16 code unit offset
 	Length int    `json:"length"` // UTF-16 code unit length
 	User   *User  `json:"user,omitempty"`
+}
+
+// PhotoSize represents one size of a photo or a file/sticker thumbnail.
+type PhotoSize struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	Width        int    `json:"width"`
+	Height       int    `json:"height"`
+	FileSize     int64  `json:"file_size,omitempty"`
+}
+
+// Document represents a general file (as opposed to photos, voice messages, etc.).
+type Document struct {
+	FileID       string     `json:"file_id"`
+	FileUniqueID string     `json:"file_unique_id"`
+	FileName     string     `json:"file_name,omitempty"`
+	MimeType     string     `json:"mime_type,omitempty"`
+	FileSize     int64      `json:"file_size,omitempty"`
+	Thumb        *PhotoSize `json:"thumb,omitempty"`
 }
 
 // User represents a Telegram user.
@@ -277,6 +299,70 @@ func (c *Client) SendDocument(ctx context.Context, chatID, threadID int64, fileP
 		return nil, fmt.Errorf("decode sendDocument result: %w", err)
 	}
 	return msg, nil
+}
+
+// getFileResponse is the result envelope for the getFile Telegram API method.
+type getFileResponse struct {
+	FileID       string `json:"file_id"`
+	FileUniqueID string `json:"file_unique_id"`
+	FileSize     int64  `json:"file_size,omitempty"`
+	FilePath     string `json:"file_path,omitempty"`
+}
+
+// GetFile returns the file_path for a given file_id.
+func (c *Client) GetFile(ctx context.Context, fileID string) (string, error) {
+	raw, err := c.apiRequest(ctx, "getFile", map[string]interface{}{
+		"file_id": fileID,
+	})
+	if err != nil {
+		return "", fmt.Errorf("getFile request failed: %w", err)
+	}
+	var result getFileResponse
+	if err := json.Unmarshal(raw, &result); err != nil {
+		return "", fmt.Errorf("decode getFile result: %w", err)
+	}
+	if result.FilePath == "" {
+		return "", fmt.Errorf("getFile: file_path is empty")
+	}
+	return result.FilePath, nil
+}
+
+// maxDownloadBytes caps the maximum file size for downloads to prevent disk
+// exhaustion. Telegram Bot API allows uploads up to 20 MB for photos and 50 MB
+// for documents; we use a safe 20 MB limit here.
+const maxDownloadBytes = 20 * 1024 * 1024
+
+// DownloadFile downloads a Telegram file from filePath to destPath on disk.
+func (c *Client) DownloadFile(ctx context.Context, filePath, destPath string) error {
+	url := fmt.Sprintf("%s/file/bot%s/%s", c.baseURL, c.token, filePath)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create download request: %w", err)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("perform download request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+		return fmt.Errorf("download failed: HTTP %d: %s", resp.StatusCode, string(body))
+	}
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create destination file: %w", err)
+	}
+	var copyErr error
+	defer func() {
+		f.Close()
+		if copyErr != nil {
+			os.Remove(destPath)
+		}
+	}()
+	if _, copyErr = io.Copy(f, io.LimitReader(resp.Body, maxDownloadBytes)); copyErr != nil {
+		return fmt.Errorf("write downloaded data: %w", copyErr)
+	}
+	return nil
 }
 
 // apiRequest is a helper to call Telegram API endpoints.

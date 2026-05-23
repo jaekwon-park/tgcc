@@ -280,6 +280,29 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 
 	// Forward message to claude
 	text := strings.TrimSpace(update.Message.Text)
+	caption := strings.TrimSpace(update.Message.Caption)
+
+	// Handle photo messages: download the largest photo and pass the path to Claude.
+	if len(update.Message.Photo) > 0 {
+		photo := update.Message.Photo[len(update.Message.Photo)-1]
+		imgPath, err := r.downloadTelegramFile(ctx, photo.FileID, topic.WorkspacePath)
+		if err != nil {
+			r.logger.Warn("photo download failed", "error", err)
+			text = "[이미지 다운로드 실패]"
+			if caption != "" {
+				text += " " + caption
+			}
+		} else {
+			if caption != "" {
+				text = fmt.Sprintf("[이미지: %s]\n%s", imgPath, caption)
+			} else {
+				text = fmt.Sprintf("[이미지: %s]", imgPath)
+			}
+		}
+	} else if text == "" && caption != "" {
+		text = caption
+	}
+
 	if text == "" {
 		return nil
 	}
@@ -1687,4 +1710,52 @@ func formatDuration(d time.Duration) string {
 		return fmt.Sprintf("%d시간 %d분", hours, minutes)
 	}
 	return fmt.Sprintf("%d시간", hours)
+}
+
+// ============================================================================
+// File download helpers (ADM-1054)
+// ============================================================================
+
+// downloadTelegramFile downloads a file from Telegram and saves it to the
+// workspace tmp directory. Falls back to os.TempDir if the workspace tmp
+// directory cannot be created.
+func (r *Router) downloadTelegramFile(ctx context.Context, fileID, workspacePath string) (string, error) {
+	// Get the file path from Telegram
+	filePath, err := r.botClient.GetFile(ctx, fileID)
+	if err != nil {
+		return "", fmt.Errorf("get file: %w", err)
+	}
+
+	// Determine file extension from the Telegram file path
+	ext := filepath.Ext(filePath)
+
+	// Sanitize fileID for use in filename
+	safeName := sanitizeFilename(fileID)
+
+	// Try workspace tmp dir first, fall back to system /tmp
+	if workspacePath == "" {
+		workspacePath = os.TempDir()
+	}
+	destDir := filepath.Join(workspacePath, "tmp")
+	if err := os.MkdirAll(destDir, 0700); err != nil {
+		destDir = os.TempDir()
+	}
+
+	destPath := filepath.Join(destDir, safeName+ext)
+
+	if err := r.botClient.DownloadFile(ctx, filePath, destPath); err != nil {
+		return "", fmt.Errorf("download file: %w", err)
+	}
+
+	return destPath, nil
+}
+
+// sanitizeFilename replaces characters that are unsafe in filenames with '_'.
+func sanitizeFilename(name string) string {
+	return strings.Map(func(r rune) rune {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-' {
+			return r
+		}
+		return '_'
+	}, name)
 }
