@@ -261,6 +261,27 @@ func (s *Store) SessionByCorrelationID(correlationID string) (*Session, error) {
 	return session, nil
 }
 
+// SessionByWorkspaceNullClaudeID returns the first non-archived session matching
+// the given workspace path where claude_session_id IS NULL, regardless of status.
+// This is used by the session-start hook as a fallback when correlation_id matching
+// fails, to avoid the race condition where the 2-second timer has already transitioned
+// the session from spawning to active.
+func (s *Store) SessionByWorkspaceNullClaudeID(workspacePath string) (*Session, error) {
+	row := s.DB.QueryRow(
+		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		FROM sessions WHERE workspace_path = ? AND claude_session_id IS NULL AND archived_at IS NULL LIMIT 1`,
+		workspacePath,
+	)
+	session, err := scanSession(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return session, nil
+}
+
 func (s *Store) DeleteSession(id string) error {
 	_, err := s.DB.Exec(`DELETE FROM sessions WHERE id = ?`, id)
 	return err
