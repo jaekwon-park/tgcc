@@ -144,11 +144,20 @@ func (m *Monitor) checkThresholds(ctx context.Context, session *store.Session, c
 		}
 		// Safety: max compacts.
 		if session.CompactCount >= maxCompacts {
-			m.sender.Enqueue(bot.OutgoingMsg{
-				ChatID:   chatID,
-				ThreadID: threadID,
-				Text:     fmt.Sprintf("⚠️ 세션 컨텍스트 한계 도달 (compact %d회 완료). /refresh 로 세션을 초기화하세요.", session.CompactCount),
-			})
+			limitKey := session.ID + ":maxcompact"
+			m.mu.Lock()
+			alreadyLimitWarned := m.warned[limitKey]
+			if !alreadyLimitWarned {
+				m.warned[limitKey] = true
+			}
+			m.mu.Unlock()
+			if !alreadyLimitWarned {
+				m.sender.Enqueue(bot.OutgoingMsg{
+					ChatID:   chatID,
+					ThreadID: threadID,
+					Text:     fmt.Sprintf("⚠️ 세션 컨텍스트 한계 도달 (compact %d회 완료). /refresh 로 세션을 초기화하세요.", session.CompactCount),
+				})
+			}
 			return
 		}
 

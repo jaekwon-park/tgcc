@@ -300,9 +300,9 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 			}
 		} else {
 			if caption != "" {
-				text = fmt.Sprintf("[이미지: %s]\n%s", imgPath, caption)
+				text = fmt.Sprintf("[이미지 첨부: %s]\n위 이미지 파일을 Read 도구로 열어 확인하세요.\n%s", imgPath, caption)
 			} else {
-				text = fmt.Sprintf("[이미지: %s]", imgPath)
+				text = fmt.Sprintf("[이미지 첨부: %s]\n위 이미지 파일을 Read 도구로 열어 확인하세요.", imgPath)
 			}
 		}
 	} else if text == "" && caption != "" {
