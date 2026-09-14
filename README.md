@@ -1,5 +1,7 @@
 # tgcc
 
+Topics can also use the Codex CLI with `cli = "codex"`. See [configuration, commands and deployment](docs/codex.md).
+
 > Telegram Forum Topics ↔ Claude Code 브릿지 (Go 구현)
 
 ccgram을 Go로 재작성하면서 토픽-세션 꼬임 문제를 원천 차단하고, Anthropic 구독 한도를 그대로 유지하는 설계.

@@ -36,6 +36,32 @@ func (r *Reconciler) Run(ctx context.Context, tmuxSession string) error {
 		return nil
 	}
 
+	claudeSessions := make([]*store.Session, 0, len(sessions))
+	for _, sess := range sessions {
+		if sess.CLI != "codex" {
+			claudeSessions = append(claudeSessions, sess)
+			continue
+		}
+		if err := stopOrphanCodex(sess); err != nil {
+			return err
+		}
+		if err := r.store.UpdateSessionCodexProcess(sess.ID, 0, ""); err != nil {
+			return err
+		}
+		if sess.Status != "idle" {
+			if err := r.store.UpdateSessionStatus(sess.ID, "failed"); err != nil {
+				return err
+			}
+			if topic, err := r.store.TopicByID(sess.TopicID); err == nil && topic != nil && r.sender != nil {
+				r.sender.Enqueue(bot.OutgoingMsg{ChatID: topic.ChatID, ThreadID: topic.ThreadID,
+					Text: "⚠️ 재시작으로 Codex 요청이 중단되었습니다. 결과를 확인하고 /resume 후 다시 보내세요."})
+			}
+		}
+	}
+	sessions = claudeSessions
+	if len(sessions) == 0 {
+		return nil
+	}
 	windows, err := r.tmux.ListWindows(tmuxSession)
 	if err != nil {
 		r.logger.Warn("reconciler: cannot list tmux windows", "err", err)

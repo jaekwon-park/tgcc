@@ -106,7 +106,7 @@ func (h *Handlers) HandleSessionStart(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	if sess != nil {
+	if sess != nil && sess.CLI != "codex" {
 		if err := h.store.UpdateSessionClaudeID(sess.ID, sessionID); err != nil {
 			h.logger.Warn("hook session-start: update claude_session_id failed", "error", err)
 		}
@@ -176,7 +176,7 @@ func (h *Handlers) handleStopAsync(ctx context.Context, sessionID, transcriptPat
 			h.logger.Debug("hook stop: resolved via fallback tgcc ID (not claude_session_id)", "session_id", sessionID)
 		}
 	}
-	if sess == nil {
+	if sess == nil || sess.CLI == "codex" {
 		return
 	}
 
@@ -360,7 +360,7 @@ func (h *Handlers) HandleNotification(w http.ResponseWriter, r *http.Request) {
 				h.logger.Warn("hook notification: lookup by id failed", "error", err, "session_id", sessionID)
 			}
 		}
-		if sess != nil {
+		if sess != nil && sess.CLI != "codex" {
 			topic, terr := h.store.TopicByID(sess.TopicID)
 			if terr != nil {
 				h.logger.Warn("hook notification: topic lookup failed", "error", terr, "topic_id", sess.TopicID)

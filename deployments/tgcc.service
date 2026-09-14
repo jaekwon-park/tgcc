@@ -44,7 +44,7 @@ TimeoutStopSec=10
 NoNewPrivileges=yes
 PrivateTmp=no
 ProtectSystem=strict
-ReadWritePaths=/tmp /opt/tgcc/bin /opt/tgcc/run /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json
+ReadWritePaths=/tmp /opt/tgcc/bin /opt/tgcc/run /home/insainty/projects /home/insainty/.claude /home/insainty/.claude.json -/home/insainty/.codex
 
 # Logging
 StandardOutput=journal

@@ -7,32 +7,38 @@ import (
 
 // Session represents a Claude Code session.
 type Session struct {
-	ID              string
-	TopicID         int64
-	TmuxSession     string
-	TmuxWindow      string
-	WorkspacePath   string
-	ClaudeSessionID string
-	CorrelationID   string
-	PID             int64
-	Status          string
-	LastActivityAt  int64
-	CreatedAt       int64
-	ArchivedAt      int64
-	TranscriptPath  string
-	TranscriptBytes int64
-	TurnCount       int64
-	CompactCount    int64
-	LastCompactAt   int64
+	CLI               string
+	CodexThreadID     string
+	CodexProcessStart string
+	ID                string
+	TopicID           int64
+	TmuxSession       string
+	TmuxWindow        string
+	WorkspacePath     string
+	ClaudeSessionID   string
+	CorrelationID     string
+	PID               int64
+	Status            string
+	LastActivityAt    int64
+	CreatedAt         int64
+	ArchivedAt        int64
+	TranscriptPath    string
+	TranscriptBytes   int64
+	TurnCount         int64
+	CompactCount      int64
+	LastCompactAt     int64
 }
 
 func (s *Store) InsertSession(session *Session) error {
+	if session.CLI == "" {
+		session.CLI = "claude"
+	}
 	_, err := s.DB.Exec(
 		`INSERT INTO sessions
-		(id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		(id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, cli, codex_thread_id, codex_process_start)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.TopicID, session.TmuxSession, session.TmuxWindow, session.WorkspacePath,
-		nullString(session.ClaudeSessionID), nullString(session.CorrelationID), nullInt64(session.PID), session.Status, session.LastActivityAt, session.CreatedAt, nil, nullString(session.TranscriptPath),
+		nullString(session.ClaudeSessionID), nullString(session.CorrelationID), nullInt64(session.PID), session.Status, session.LastActivityAt, session.CreatedAt, nil, nullString(session.TranscriptPath), session.CLI, nullString(session.CodexThreadID), session.CodexProcessStart,
 	)
 	return err
 }
@@ -40,7 +46,7 @@ func (s *Store) InsertSession(session *Session) error {
 func (s *Store) SessionByID(id string) (*Session, error) {
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
 		FROM sessions WHERE id = ?`,
 		id,
 	)
@@ -57,7 +63,7 @@ func (s *Store) SessionByID(id string) (*Session, error) {
 func (s *Store) SessionByTopicID(topicID int64) (*Session, error) {
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
 		FROM sessions WHERE topic_id = ? AND archived_at IS NULL`,
 		topicID,
 	)
@@ -84,7 +90,7 @@ func (s *Store) ActiveSessions(statuses []string) ([]*Session, error) {
 	}
 
 	query := `SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
 		FROM sessions WHERE status IN (` + strings.Join(placeholders, ",") + `) AND archived_at IS NULL`
 	rows, err := s.DB.Query(query, args...)
 	if err != nil {
@@ -195,7 +201,7 @@ func (s *Store) UpdateSessionTranscriptPath(id string, path string) error {
 func (s *Store) ArchivedSessionsByTopic(topicID int64) ([]*Session, error) {
 	rows, err := s.DB.Query(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
 		FROM sessions WHERE topic_id = ? AND archived_at IS NOT NULL ORDER BY archived_at DESC`,
 		topicID,
 	)
@@ -225,8 +231,8 @@ func (s *Store) SessionByClaudeID(claudeID string) (*Session, error) {
 	}
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
-		FROM sessions WHERE claude_session_id = ? AND archived_at IS NULL`,
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
+		FROM sessions WHERE cli = 'claude' AND claude_session_id = ? AND archived_at IS NULL`,
 		claudeID,
 	)
 	session, err := scanSession(row.Scan)
@@ -247,8 +253,8 @@ func (s *Store) SessionByCorrelationID(correlationID string) (*Session, error) {
 	}
 	row := s.DB.QueryRow(
 		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at,
-		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
-		FROM sessions WHERE correlation_id = ? AND archived_at IS NULL`,
+		archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
+		FROM sessions WHERE cli = 'claude' AND correlation_id = ? AND archived_at IS NULL`,
 		correlationID,
 	)
 	session, err := scanSession(row.Scan)
@@ -268,8 +274,8 @@ func (s *Store) SessionByCorrelationID(correlationID string) (*Session, error) {
 // the session from spawning to active.
 func (s *Store) SessionByWorkspaceNullClaudeID(workspacePath string) (*Session, error) {
 	row := s.DB.QueryRow(
-		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at
-		FROM sessions WHERE workspace_path = ? AND claude_session_id IS NULL AND archived_at IS NULL LIMIT 1`,
+		`SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start
+		FROM sessions WHERE cli = 'claude' AND workspace_path = ? AND claude_session_id IS NULL AND archived_at IS NULL LIMIT 1`,
 		workspacePath,
 	)
 	session, err := scanSession(row.Scan)
@@ -300,7 +306,7 @@ func (s *Store) SessionByWorkspaceAndStatus(workspacePath string, statuses []str
 		placeholders[i] = "?"
 		args[i+1] = status
 	}
-	query := "SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at FROM sessions WHERE workspace_path = ? AND status IN (" + strings.Join(placeholders, ",") + ") AND archived_at IS NULL LIMIT 1"
+	query := "SELECT id, topic_id, tmux_session, tmux_window, workspace_path, claude_session_id, correlation_id, pid, status, last_activity_at, created_at, archived_at, transcript_path, transcript_bytes, turn_count, compact_count, last_compact_at, cli, codex_thread_id, codex_process_start FROM sessions WHERE workspace_path = ? AND status IN (" + strings.Join(placeholders, ",") + ") AND archived_at IS NULL LIMIT 1"
 	row := s.DB.QueryRow(query, args...)
 	session, err := scanSession(row.Scan)
 	if err != nil {
@@ -320,14 +326,16 @@ func scanSession(scan func(dest ...interface{}) error) (*Session, error) {
 	var archivedAt sql.NullInt64
 	var transcriptPath sql.NullString
 	var lastCompactAt sql.NullInt64
+	var codexThreadID sql.NullString
 	err := scan(
 		&session.ID, &session.TopicID, &session.TmuxSession, &session.TmuxWindow, &session.WorkspacePath,
 		&claudeSessionID, &correlationID, &pid, &session.Status, &session.LastActivityAt, &session.CreatedAt,
-		&archivedAt, &transcriptPath, &session.TranscriptBytes, &session.TurnCount, &session.CompactCount, &lastCompactAt,
+		&archivedAt, &transcriptPath, &session.TranscriptBytes, &session.TurnCount, &session.CompactCount, &lastCompactAt, &session.CLI, &codexThreadID, &session.CodexProcessStart,
 	)
 	if err != nil {
 		return nil, err
 	}
+	session.CodexThreadID = codexThreadID.String
 	if claudeSessionID.Valid {
 		session.ClaudeSessionID = claudeSessionID.String
 	}
@@ -361,4 +369,14 @@ func nullInt64(v int64) interface{} {
 		return nil
 	}
 	return v
+}
+
+func (s *Store) UpdateSessionCodexThread(id, threadID string) error {
+	_, err := s.DB.Exec(`UPDATE sessions SET codex_thread_id = ?, last_activity_at = ? WHERE id = ? AND cli = 'codex'`, threadID, CurrentTimeMs(), id)
+	return err
+}
+
+func (s *Store) UpdateSessionCodexProcess(id string, pid int64, started string) error {
+	_, err := s.DB.Exec("UPDATE sessions SET pid = ?, codex_process_start = ? WHERE id = ? AND cli = 'codex'", pid, started, id)
+	return err
 }

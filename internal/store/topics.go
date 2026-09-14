@@ -7,6 +7,7 @@ import (
 
 // Topic represents a telegram forum topic.
 type Topic struct {
+	CLI              string
 	ID               int64
 	ChatID           int64
 	ThreadID         int64
@@ -68,6 +69,7 @@ func (s *Store) InsertTopic(chatID int64, threadID int64, name string) (*Topic, 
 		return nil, err
 	}
 	return &Topic{
+		CLI:       "claude",
 		ID:        id,
 		ChatID:    chatID,
 		ThreadID:  threadID,
@@ -83,9 +85,9 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -109,9 +111,9 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var ctxOverrides sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -132,7 +134,7 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 // by the outbox watcher to scan each topic's <workspace>/outbox/ directory.
 func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, created_at
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, created_at
 		 FROM topics WHERE workspace_path IS NOT NULL AND workspace_path != ''`,
 	)
 	if err != nil {
@@ -146,7 +148,7 @@ func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
 		var honchoSession sql.NullString
 		var ctxOverrides sql.NullString
 		t := &Topic{}
-		if err := rows.Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		if workspace.Valid {
@@ -276,4 +278,15 @@ func (s *Store) UpsertTopicFull(chatID, threadID int64, name, honchoSession, mod
 	}
 
 	return fmt.Sprintf("%d", topic.ID), nil
+}
+
+func (s *Store) SyncTopicCLI(topicID int64, cli, model string) error {
+	if cli == "" {
+		cli = "claude"
+	}
+	if cli != "claude" && cli != "codex" {
+		return fmt.Errorf("invalid cli %q", cli)
+	}
+	_, err := s.DB.Exec(`UPDATE topics SET claude_model = CASE WHEN cli != ? OR ? != '' THEN ? ELSE claude_model END, cli = ? WHERE id = ?`, cli, model, nullString(model), cli, topicID)
+	return err
 }

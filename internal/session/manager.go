@@ -10,11 +10,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/jaekwon-park/tgcc/internal/bot"
+	"github.com/jaekwon-park/tgcc/internal/config"
 	"github.com/jaekwon-park/tgcc/internal/honcho"
 	"github.com/jaekwon-park/tgcc/internal/store"
 	"github.com/jaekwon-park/tgcc/internal/tmux"
@@ -22,6 +24,8 @@ import (
 
 // Manager handles spawn/kill/resume of Claude Code sessions.
 type Manager struct {
+	lifecycleMu    sync.Mutex
+	codex          *codexRunner
 	store          *store.Store
 	adapter        *tmux.Adapter
 	sm             *StateMachine
@@ -45,7 +49,7 @@ func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sen
 		homeDir, _ := os.UserHomeDir()
 		workspaceRoot = homeDir
 	}
-	return &Manager{
+	manager := &Manager{
 		store:          st,
 		adapter:        adapter,
 		sm:             NewStateMachine(),
@@ -58,6 +62,8 @@ func NewManager(st *store.Store, adapter *tmux.Adapter, logger *slog.Logger, sen
 		workspaceRoots: workspaceRoots,
 		spawnEnv:       spawnEnv,
 	}
+	manager.ConfigureCodex("codex", nil, false)
+	return manager
 }
 
 // buildSpawnEnv merges the configured spawn env with the per-spawn overrides.
@@ -80,6 +86,19 @@ func (m *Manager) buildSpawnEnv(perSpawn map[string]string) map[string]string {
 // Spawn creates a new Claude Code session for the given topic and workspace.
 // It performs: session insert → tmux new-window → claude execution → status update.
 func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string, chatID int64, threadID int64, model string) (*store.Session, error) {
+	m.lifecycleMu.Lock()
+	defer m.lifecycleMu.Unlock()
+	topic, err := m.store.TopicByID(topicID)
+	if err != nil || topic == nil {
+		return nil, fmt.Errorf("topic %d not found: %v", topicID, err)
+	}
+	model, err = config.ModelForCLI(topic.CLI, model)
+	if err != nil {
+		return nil, err
+	}
+	if topic.CLI == "codex" {
+		return m.spawnCodex(topic, workspacePath)
+	}
 	// 1. Validate workspace exists
 	if _, err := os.Stat(workspacePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("workspace not found: %s", workspacePath)
@@ -92,6 +111,12 @@ func (m *Manager) Spawn(ctx context.Context, topicID int64, workspacePath string
 	existing, err := m.store.SessionByTopicID(topicID)
 	if err != nil {
 		return nil, fmt.Errorf("check existing session: %w", err)
+	}
+	if existing != nil && existing.CLI != topic.CLI {
+		if err := m.retireSession(ctx, existing); err != nil {
+			return nil, err
+		}
+		existing = nil
 	}
 	if existing != nil {
 		if m.sm.IsActive(Status(existing.Status)) {
@@ -204,6 +229,10 @@ func (m *Manager) Kill(ctx context.Context, sessionID string) error {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
 
+	if sess.CLI == "codex" {
+		return m.codex.stop(sessionID)
+	}
+
 	// Transition to stopping
 	if err := m.sm.Transition(ctx, sess, StatusStopping); err != nil {
 		return fmt.Errorf("cannot stop from %s: %w", sess.Status, err)
@@ -243,6 +272,10 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	}
 	if sess == nil {
 		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	if sess.CLI == "codex" {
+		return m.codex.stop(sessionID)
 	}
 
 	// Transition to stopping
@@ -293,6 +326,25 @@ func (m *Manager) Resume(ctx context.Context, sessionID string) (*store.Session,
 		return nil, fmt.Errorf("session not found: %s", sessionID)
 	}
 
+	if sess.CLI == "codex" {
+		m.codex.mu.Lock()
+		defer m.codex.mu.Unlock()
+		topic, err := m.store.TopicByID(sess.TopicID)
+		if err != nil || topic == nil || topic.CLI != sess.CLI || sess.ArchivedAt != 0 {
+			return nil, fmt.Errorf("Codex 세션 설정이 변경되었습니다. /new를 사용하세요")
+		}
+		if m.codex.closed || m.codex.workers[sess.ID] != nil {
+			return nil, fmt.Errorf("Codex 요청이 실행 중이거나 종료 중입니다")
+		}
+		if err := m.store.UpdateSessionStatus(sess.ID, "idle"); err != nil {
+			return nil, err
+		}
+		sess.Status = "idle"
+		return sess, nil
+	}
+	if topic, err := m.store.TopicByID(sess.TopicID); err != nil || topic == nil || topic.CLI != sess.CLI {
+		return nil, fmt.Errorf("세션 실행기가 변경되었습니다. /new를 사용하세요")
+	}
 	// Only resume from crashed, stopped, or failed states
 	if !m.sm.CanTransition(Status(sess.Status), StatusResuming) {
 		return nil, fmt.Errorf("cannot resume from status: %s", sess.Status)
@@ -368,6 +420,9 @@ func (m *Manager) ForwardMessage(ctx context.Context, sessionID string, text str
 	if sess == nil {
 		return fmt.Errorf("session not found: %s", sessionID)
 	}
+	if sess.CLI == "codex" {
+		return m.codex.enqueue(ctx, sessionID, codexMessage{text: text})
+	}
 	if !m.sm.IsActive(Status(sess.Status)) {
 		return fmt.Errorf("session is not active (status: %s)", sess.Status)
 	}
@@ -404,6 +459,9 @@ func (m *Manager) OnSessionActivated(ctx context.Context, sessionID string) {
 	sess, err := m.store.SessionByID(sessionID)
 	if err != nil || sess == nil {
 		m.logger.Warn("OnSessionActivated: session not found", "session_id", sessionID, "error", err)
+		return
+	}
+	if sess.CLI == "codex" {
 		return
 	}
 	if mem := m.loadHonchoContext(ctx, sess.TopicID); mem != "" {
@@ -507,6 +565,16 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 		return nil, fmt.Errorf("session not found: %s", oldSessionID)
 	}
 
+	topic, topicErr := m.store.TopicByID(oldSess.TopicID)
+	if topicErr != nil || topic == nil {
+		return nil, fmt.Errorf("topic not found: %v", topicErr)
+	}
+	if oldSess.CLI == "codex" || topic.CLI == "codex" {
+		if err := m.retireSession(ctx, oldSess); err != nil {
+			return nil, err
+		}
+		return m.Spawn(ctx, oldSess.TopicID, oldSess.WorkspacePath, chatID, threadID, topic.ClaudeModel.String)
+	}
 	// 2a. Persist the conversation to Honcho BEFORE archiving so the new Claude
 	// can recover long-term memory via BuildResumeContext on the next start.
 	// Best-effort: failure here must not block the restart path.
@@ -974,4 +1042,94 @@ func (m *Manager) WriteSquashedTranscript(originalPath string, summary string, r
 	}
 
 	return newPath, nil
+}
+
+func (m *Manager) ConfigureCodex(bin string, typing *bot.TypingManager, drain bool) {
+	var output codexOutput
+	if m.sender != nil {
+		output = m.sender
+	}
+	m.codex = newCodexRunner(m.store, bin, m.spawnEnv, output, typing, m.logger)
+	m.codex.drain = drain
+}
+
+func (m *Manager) Shutdown() {
+	m.codex.close()
+}
+
+func (m *Manager) ForwardImages(ctx context.Context, sessionID, text string, images []string) error {
+	return m.codex.enqueue(ctx, sessionID, codexMessage{text: text, images: append([]string(nil), images...)})
+}
+
+func (m *Manager) spawnCodex(topic *store.Topic, workspace string) (*store.Session, error) {
+	info, err := os.Stat(workspace)
+	if err != nil {
+		return nil, err
+	}
+	if !info.IsDir() {
+		return nil, fmt.Errorf("workspace is not a directory: %s", workspace)
+	}
+	existing, err := m.store.SessionByTopicID(topic.ID)
+	if err != nil {
+		return nil, err
+	}
+	if existing != nil {
+		if existing.CLI == "codex" && (existing.Status == "active" || existing.Status == "idle") {
+			return nil, fmt.Errorf("Codex 세션이 이미 있습니다. /refresh로 새로 시작하세요")
+		}
+		if err := m.retireSession(context.Background(), existing); err != nil {
+			return nil, err
+		}
+	}
+	now := store.CurrentTimeMs()
+	sess := &store.Session{ID: uuid.NewString(), TopicID: topic.ID, CLI: "codex", WorkspacePath: workspace,
+		Status: "idle", CreatedAt: now, LastActivityAt: now}
+	if err := m.store.InsertSession(sess); err != nil {
+		return nil, err
+	}
+	m.codex.notify(topic, "✅ Codex 세션 준비 완료. 다음 메시지부터 새 대화를 시작합니다.")
+	return sess, nil
+}
+
+func (m *Manager) retireSession(ctx context.Context, sess *store.Session) error {
+	if sess.CLI == "codex" {
+		if err := m.codex.stop(sess.ID); err != nil {
+			return err
+		}
+	} else if sess.Status != "stopped" && sess.Status != "failed" {
+		m.saveTranscriptToHoncho(ctx, sess)
+		if sess.TmuxWindow != "" {
+			windows, err := m.adapter.ListWindows(sess.TmuxSession)
+			if err != nil {
+				return fmt.Errorf("check old session windows: %w", err)
+			}
+			for _, window := range windows {
+				if window.ID == sess.TmuxWindow {
+					if err := m.adapter.KillWindow(sess.TmuxWindow); err != nil {
+						return err
+					}
+				}
+			}
+		}
+	}
+	return m.store.ArchiveSession(sess.ID, store.CurrentTimeMs())
+}
+
+func (m *Manager) SyncSessionCLIs(ctx context.Context) error {
+	sessions, err := m.store.ActiveSessions([]string{"pending", "spawning", "active", "idle", "compacting", "crashed", "resuming", "stopping", "stopped", "failed", "hibernated"})
+	if err != nil {
+		return err
+	}
+	for _, sess := range sessions {
+		topic, err := m.store.TopicByID(sess.TopicID)
+		if err != nil {
+			return err
+		}
+		if topic != nil && topic.CLI != sess.CLI {
+			if err := m.retireSession(ctx, sess); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }

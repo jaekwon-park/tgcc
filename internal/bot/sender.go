@@ -10,6 +10,7 @@ import (
 
 // OutgoingMsg represents a message to be sent to Telegram.
 type OutgoingMsg struct {
+	barrier      chan struct{}
 	ChatID       int64
 	ThreadID     int64
 	Text         string
@@ -56,10 +57,14 @@ func (s *Sender) Start(ctx context.Context) error {
 		case <-s.done:
 			return nil
 		case msg := <-s.queue:
+			if msg.barrier != nil {
+				close(msg.barrier)
+				continue
+			}
 			if err := limiter.wait(ctx); err != nil {
 				return nil
 			}
-			if _, err := s.client.SendMessage(ctx, msg.ChatID, msg.Text, msg.ReplyToMsgID, msg.ThreadID); err != nil {
+			if sent, err := s.client.SendMessage(ctx, msg.ChatID, msg.Text, msg.ReplyToMsgID, msg.ThreadID); err != nil {
 				var retryErr *RetryAfterError
 				if errors.As(err, &retryErr) {
 					if msg.Retries < 3 {
@@ -100,8 +105,25 @@ func (s *Sender) Start(ctx context.Context) error {
 				} else {
 					s.logger.Error("sendMessage failed", "error", err, "chat_id", msg.ChatID, "thread_id", msg.ThreadID)
 				}
+			} else if sent != nil {
+				s.logger.Info("telegram message sent", "chat_id", msg.ChatID, "thread_id", msg.ThreadID, "message_id", sent.MessageID)
 			}
 		}
+	}
+}
+
+func (s *Sender) Flush(ctx context.Context) error {
+	barrier := make(chan struct{})
+	select {
+	case s.queue <- OutgoingMsg{barrier: barrier}:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-barrier:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 

@@ -68,6 +68,17 @@ func (r *Router) handleCommand(ctx context.Context, update bot.Update, user *sto
 	}
 
 	switch fields[0] {
+	case "/compact", "/ctxstatus", "/squash", "/ctxconfig":
+		topic, err := r.store.TopicByChatThread(update.Message.Chat.ID, update.Message.MessageThreadID)
+		if err != nil {
+			return err
+		}
+		if topic != nil && topic.CLI == "codex" {
+			r.sender.Enqueue(bot.OutgoingMsg{ChatID: topic.ChatID, ThreadID: topic.ThreadID, Text: "Codex에서는 " + fields[0] + "를 아직 지원하지 않습니다."})
+			return nil
+		}
+	}
+	switch fields[0] {
 	case "/start":
 		return r.handleStart(ctx, update, user)
 	case "/pair":
@@ -174,6 +185,10 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	// commands bypass this (handled in handleCommand, not here).
 	if topic.RequireMention && !r.botAddressed(update.Message) {
 		return nil
+	}
+
+	if topic.CLI == "codex" {
+		return r.handleCodexMessage(ctx, update, topic)
 	}
 
 	// Find active session for this topic
@@ -775,8 +790,8 @@ func (r *Router) handleStatus(ctx context.Context, update bot.Update, user *stor
 		statusIcon = "❌"
 	}
 
-	text := fmt.Sprintf("📊 세션 상태\n\nID: %s\n상태: %s %s\n워크스페이스: %s\nPID: %d\n시작: %s 전\n마지막 활동: %s 전\ntmux: %s:%s",
-		sess.ID[:8],
+	text := fmt.Sprintf("📊 세션 상태\n\nID: %s\nCLI: %s\n상태: %s %s\n워크스페이스: %s\nPID: %d\n시작: %s 전\n마지막 활동: %s 전\ntmux: %s:%s",
+		sess.ID[:8], sess.CLI,
 		statusIcon, sess.Status,
 		sess.WorkspacePath,
 		sess.PID,
@@ -784,6 +799,9 @@ func (r *Router) handleStatus(ctx context.Context, update bot.Update, user *stor
 		formatDuration(lastAct),
 		sess.TmuxSession, sess.TmuxWindow,
 	)
+	if sess.CLI == "codex" {
+		text = strings.Replace(text, "\ntmux: :", "\nCodex thread: "+sess.CodexThreadID, 1)
+	}
 
 	r.sender.Enqueue(bot.OutgoingMsg{
 		ChatID:   chat.ID,
@@ -848,8 +866,8 @@ func (r *Router) handleList(ctx context.Context, update bot.Update, user *store.
 			}
 		}
 
-		sb.WriteString(fmt.Sprintf("%s %s  %s  %s  %s\n",
-			icon, topicName, s.Status, filepath.Base(s.WorkspacePath), s.ID[:8]))
+		sb.WriteString(fmt.Sprintf("%s %s  %s  %s  %s  %s\n",
+			icon, topicName, s.CLI, s.Status, filepath.Base(s.WorkspacePath), s.ID[:8]))
 	}
 
 	r.sender.Enqueue(bot.OutgoingMsg{
@@ -918,6 +936,9 @@ func (r *Router) handleModel(ctx context.Context, update bot.Update, user *store
 
 	if len(fields) < 2 {
 		model := "기본값"
+		if topic.CLI == "codex" {
+			model = "gpt-5.5"
+		}
 		if topic.ClaudeModel.Valid {
 			model = topic.ClaudeModel.String
 		}
@@ -929,11 +950,19 @@ func (r *Router) handleModel(ctx context.Context, update bot.Update, user *store
 		return nil
 	}
 
-	newModel := fields[1]
+	newModel, err := config.ModelForCLI(topic.CLI, fields[1])
+	if err != nil {
+		r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: err.Error()})
+		return err
+	}
 	if err := r.store.UpdateTopicModel(topic.ID, newModel); err != nil {
 		return fmt.Errorf("update topic model: %w", err)
 	}
 
+	if topic.CLI == "codex" {
+		r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "Codex 모델이 " + newModel + "(으)로 변경되었습니다. 다음 요청부터 적용합니다."})
+		return nil
+	}
 	sess, _ := r.mgr.GetSessionByTopic(topic.ID)
 	if sess != nil {
 		if killErr := r.mgr.Kill(ctx, sess.ID); killErr != nil {
@@ -1074,6 +1103,15 @@ func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *sto
 		return nil
 	}
 
+	if sess.CLI == "codex" || topic.CLI == "codex" {
+		_, err := r.mgr.FreshRestart(ctx, sess.ID, "", chat.ID, threadID)
+		if err != nil {
+			r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "❌ 새로고침 실패: " + err.Error()})
+			return err
+		}
+		r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "🔄 새 세션을 준비했습니다. 이전 대화 문맥은 자동으로 승계되지 않습니다."})
+		return nil
+	}
 	summary := ""
 	if sess.TranscriptPath != "" {
 		summary, _ = r.mgr.SummarizeLastNTurns(sess.TranscriptPath, 10)
@@ -1416,8 +1454,8 @@ func (r *Router) handleListArchived(ctx context.Context, update bot.Update, user
 		if s.ArchivedAt > 0 {
 			archivedAt = time.UnixMilli(s.ArchivedAt).Format("2006-01-02 15:04")
 		}
-		sb.WriteString(fmt.Sprintf("• %s  %s  %d턴  %s\n",
-			s.ID[:8], sizeStr, s.TurnCount, archivedAt))
+		sb.WriteString(fmt.Sprintf("• %s  %s  %s  %d턴  %s\n",
+			s.ID[:8], s.CLI, sizeStr, s.TurnCount, archivedAt))
 	}
 
 	r.sender.Enqueue(bot.OutgoingMsg{

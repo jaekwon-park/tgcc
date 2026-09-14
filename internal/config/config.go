@@ -95,6 +95,10 @@ type SpawnConfig struct {
 	Env map[string]string `toml:"env"`
 }
 
+type CodexConfig struct {
+	Bin string `toml:"bin"`
+}
+
 // Config holds all tgcc configuration values.
 type Config struct {
 	// Required
@@ -106,6 +110,7 @@ type Config struct {
 	HookToken    string
 	LogLevel     string
 	TmuxBin      string
+	CodexBin     string
 	ClaudeBin    string
 	TmuxSession  string
 	TgccTomlPath string
@@ -123,6 +128,7 @@ type Config struct {
 	// TOML sections
 	Tmux      TmuxConfig
 	Claude    ClaudeConfig
+	Codex     CodexConfig
 	Workspace WorkspaceConfig
 	Spawn     SpawnConfig
 	Outbox    OutboxConfig
@@ -141,6 +147,7 @@ type tomlFile struct {
 	Context   ContextConfig       `toml:"context"`
 	Honcho    honcho.HonchoConfig `toml:"honcho"`
 	Tmux      TmuxConfig          `toml:"tmux"`
+	Codex     CodexConfig         `toml:"codex"`
 	Claude    ClaudeConfig        `toml:"claude"`
 	Workspace WorkspaceConfig     `toml:"workspace"`
 	Spawn     SpawnConfig         `toml:"spawn"`
@@ -191,6 +198,7 @@ func Load() (*Config, error) {
 		HookToken:        getEnvOrDefault(m, "TGCC_HOOK_TOKEN", ""),
 		LogLevel:         getEnvOrDefault(m, "TGCC_LOG_LEVEL", "info"),
 		TmuxBin:          getEnvOrDefault(m, "TGCC_TMUX_BIN", "tmux"),
+		CodexBin:         getEnvOrDefault(m, "TGCC_CODEX_BIN", ""),
 		ClaudeBin:        getEnvOrDefault(m, "TGCC_CLAUDE_BIN", "claude"),
 		TmuxSession:      getEnvOrDefault(m, "TGCC_TMUX_SESSION", ""),
 		TgccTomlPath:     getEnvOrDefault(m, "TGCC_TOML_PATH", filepath.Join(exeDir, "tgcc.toml")),
@@ -216,6 +224,12 @@ func Load() (*Config, error) {
 	}
 	if cfg.Claude.Bin != "" && cfg.ClaudeBin == "claude" {
 		cfg.ClaudeBin = cfg.Claude.Bin
+	}
+	if cfg.CodexBin == "" {
+		cfg.CodexBin = cfg.Codex.Bin
+	}
+	if cfg.CodexBin == "" {
+		cfg.CodexBin = "codex"
 	}
 	if cfg.Claude.SpawnTimeout == 0 {
 		cfg.Claude.SpawnTimeout = 30
@@ -278,6 +292,7 @@ func loadTOML(path string, cfg *Config) error {
 	if tf.Tmux.Bin != "" {
 		cfg.Tmux.Bin = tf.Tmux.Bin
 	}
+	cfg.Codex = tf.Codex
 	// Merge Claude
 	if tf.Claude.Bin != "" {
 		cfg.Claude.Bin = tf.Claude.Bin
@@ -364,6 +379,7 @@ func getEnvOrDefault(m map[string]string, key, fallback string) string {
 
 // TopicConfig represents a single [[topic]] entry in tgcc.toml.
 type TopicConfig struct {
+	CLI             string `toml:"cli"`
 	ThreadID        int64  `toml:"thread_id"`
 	HonchoSessionID string `toml:"honcho_session_id"`
 	Model           string `toml:"model"`
@@ -402,5 +418,31 @@ func LoadTgccToml(path string) (*TgccToml, error) {
 	if err := toml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parse tgcc.toml: %w", err)
 	}
+	for groupIndex := range cfg.Groups {
+		for topicIndex := range cfg.Groups[groupIndex].Topics {
+			topic := &cfg.Groups[groupIndex].Topics[topicIndex]
+			if topic.CLI == "" {
+				topic.CLI = "claude"
+			}
+			if topic.CLI != "claude" && topic.CLI != "codex" {
+				return nil, fmt.Errorf("topic %d: invalid cli %q", topic.ThreadID, topic.CLI)
+			}
+		}
+	}
 	return &cfg, nil
+}
+
+func ModelForCLI(cli, model string) (string, error) {
+	lower := strings.ToLower(model)
+	if cli == "codex" {
+		if model == "" {
+			return "gpt-5.5", nil
+		}
+		if strings.HasPrefix(lower, "claude") || strings.HasPrefix(lower, "opus") || strings.HasPrefix(lower, "sonnet") || strings.HasPrefix(lower, "haiku") {
+			return "", fmt.Errorf("Codex에는 Claude 모델 %q를 사용할 수 없습니다", model)
+		}
+	} else if strings.HasPrefix(lower, "gpt-") || strings.Contains(lower, "codex") {
+		return "", fmt.Errorf("Claude에는 Codex 모델 %q를 사용할 수 없습니다", model)
+	}
+	return model, nil
 }

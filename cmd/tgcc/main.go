@@ -34,7 +34,7 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/tmux"
 )
 
-const version = "0.2.0"
+var version = "0.2.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -260,7 +260,7 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	tomlCfg, tomlErr := config.LoadTgccToml(cfg.TgccTomlPath)
 	var groupConfigs []config.GroupConfig
 	if tomlErr != nil {
-		logger.Warn("failed to load tgcc.toml, skipping topic sync", "error", tomlErr)
+		return fmt.Errorf("load topic configuration: %w", tomlErr)
 	} else if tomlCfg != nil {
 		groupConfigs = tomlCfg.Groups
 		if len(tomlCfg.Groups) > 0 {
@@ -296,6 +296,9 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 					logger.Info("chat auto-registered from tgcc.toml", "chat_id", g.ChatID, "title", title, "registered_by", ownerID)
 				}
 				for _, tc := range g.Topics {
+					if _, err := config.ModelForCLI(tc.CLI, tc.Model); err != nil {
+						return err
+					}
 					topicID, err := st.UpsertTopicFull(g.ChatID, tc.ThreadID, "", tc.HonchoSessionID, tc.Model, tc.WorkspacePath)
 					if err != nil {
 						logger.Warn("topic upsert failed", "chat_id", g.ChatID, "thread_id", tc.ThreadID, "error", err)
@@ -304,6 +307,9 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 					// Sync require_mention. Always written (not gated on true) so
 					// toggling it off in tgcc.toml takes effect on restart.
 					if id, perr := strconv.ParseInt(topicID, 10, 64); perr == nil {
+						if err := st.SyncTopicCLI(id, tc.CLI, tc.Model); err != nil {
+							return fmt.Errorf("sync topic CLI: %w", err)
+						}
 						if err := st.UpdateTopicRequireMention(id, tc.RequireMention); err != nil {
 							logger.Warn("update require_mention failed", "topic_id", topicID, "error", err)
 						}
@@ -365,9 +371,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		botUsername = me.Username
 		logger.Info("bot identity", "username", botUsername)
 	}
+	deliveryCtx, stopDelivery := context.WithCancel(context.WithoutCancel(ctx))
+	defer stopDelivery()
 	sender := bot.NewSender(client, logger)
+	defer sender.Stop()
 	go func() {
-		if err := sender.Start(ctx); err != nil {
+		if err := sender.Start(deliveryCtx); err != nil {
 			logger.Error("sender stopped", "error", err)
 		}
 	}()
@@ -377,11 +386,6 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	typingMgr := bot.NewTypingManager(client, logger)
 	go typingMgr.Start(ctx)
 
-	// 4. Reconciler + Supervisor (M3)
-	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
-	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
-		logger.Warn("reconciler run failed", "error", err)
-	}
 	// 6. ACL & pairing
 	guard := acl.NewGuard(st, logger, topicAllowLists)
 	pairingMgr := acl.NewPairingManager(st)
@@ -393,6 +397,15 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 	// 7. Session manager
 	workspaceRoot := cfg.HomeDir
 	sessionMgr := session.NewManager(st, tmuxAdapter, logger, sender, honchoClient, tmuxSessionName, claudeBin, workspaceRoot, cfg.Workspace.Roots, cfg.Spawn.Env)
+	sessionMgr.ConfigureCodex(cfg.CodexBin, typingMgr, cfg.Queue.Enabled)
+	defer sessionMgr.Shutdown()
+	if err := sessionMgr.SyncSessionCLIs(ctx); err != nil {
+		return fmt.Errorf("sync session CLI: %w", err)
+	}
+	reconciler := session.NewReconciler(st, tmuxAdapter, sender, logger)
+	if err := reconciler.Run(ctx, tmuxSessionName); err != nil {
+		return fmt.Errorf("reconcile sessions: %w", err)
+	}
 
 	// 4c. Context lifecycle monitor (M6)
 	ctxMon := tmuxctx.NewMonitor(st, tmuxAdapter, sender, cfg.Context, logger)
@@ -456,6 +469,12 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 		case <-ctx.Done():
 			logger.Info("context cancelled, shutting down")
 			listener.Stop()
+			sessionMgr.Shutdown()
+			flushCtx, stopFlush := context.WithTimeout(context.Background(), 3*time.Second)
+			if err := sender.Flush(flushCtx); err != nil {
+				logger.Warn("shutdown notification flush incomplete", "error", err)
+			}
+			stopFlush()
 			sender.Stop()
 			return nil
 		case update := <-listener.Updates():

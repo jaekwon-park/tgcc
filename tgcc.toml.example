@@ -1,6 +1,9 @@
 # tgcc.toml — tgcc configuration example
 # Copy to your binary directory and customize as needed.
 
+[codex]
+bin = "/home/insainty/.npm-global/bin/codex"
+
 [context]
 soft_warn_bytes     = 2250000
 hard_compact_bytes  = 2550000
@@ -37,3 +40,9 @@ chat_id = -1001234567890
   workspace_path    = "/opt/tgcc/workspace/ccgram/dev"
   model             = "claude-sonnet-4-6"
   allow_users       = [7255744379]   # optional: restrict to listed user IDs
+
+  [[group.topic]]
+  thread_id         = 146
+  cli               = "codex"
+  model             = "gpt-5.5"
+  workspace_path    = "/home/insainty/projects/codex-topic"

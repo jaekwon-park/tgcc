@@ -112,9 +112,11 @@ func (m *TypingManager) Clear(chatID, threadID int64) {
 	delete(m.active, key)
 	m.mu.Unlock()
 	if ok && p.messageID != 0 {
-		if err := m.client.DeleteMessage(context.Background(), chatID, p.messageID); err != nil {
-			m.logger.Debug("delete thinking bubble failed", "chat_id", chatID, "thread_id", threadID, "error", err)
-		}
+		go func() {
+			if err := m.client.DeleteMessage(context.Background(), chatID, p.messageID); err != nil {
+				m.logger.Debug("delete thinking bubble failed", "chat_id", chatID, "thread_id", threadID, "error", err)
+			}
+		}()
 	}
 }
 
@@ -170,7 +172,7 @@ func (m *TypingManager) tick(ctx context.Context) {
 		elapsed := int(now.Sub(p.started).Seconds())
 		var text string
 		if now.Sub(p.lastHeartbeat) > staleThreshold {
-			text = fmt.Sprintf("⚠️ 응답 지연… %ds (Claude 무응답)", elapsed)
+			text = fmt.Sprintf("⚠️ 응답 지연… %ds (응답 대기)", elapsed)
 		} else {
 			p.frame = (p.frame + 1) % len(spinnerFrames)
 			text = fmt.Sprintf("💭 생각 중 %s %ds", spinnerFrames[p.frame], elapsed)

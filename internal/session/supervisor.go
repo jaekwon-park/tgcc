@@ -67,6 +67,9 @@ func (s *Supervisor) recover(ctx context.Context) {
 	}
 
 	for _, sess := range sessions {
+		if sess.CLI == "codex" {
+			continue
+		}
 		if sess.TranscriptBytes < s.cfg.FreshRestartBytes && sess.TurnCount < 100 {
 			// Look up topic for notification
 			topic, terr := s.store.TopicByID(sess.TopicID)
@@ -149,6 +152,9 @@ func (s *Supervisor) hibernate(ctx context.Context) {
 
 	nowMs := store.CurrentTimeMs()
 	for _, sess := range sessions {
+		if sess.CLI == "codex" {
+			continue
+		}
 		if nowMs-sess.LastActivityAt <= idleMs {
 			continue
 		}

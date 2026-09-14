@@ -67,6 +67,9 @@ func (m *Monitor) OnStopHook(ctx context.Context, sessionID, transcriptPath stri
 	if session == nil {
 		return fmt.Errorf("session %s not found (tried claude_session_id and id)", sessionID)
 	}
+	if session.CLI == "codex" {
+		return nil
+	}
 	// Re-bind the working id to the tgcc primary key so downstream store calls
 	// (which expect the tgcc id) don't accidentally use Claude's session UUID.
 	sessionID = session.ID
@@ -198,6 +201,9 @@ func (m *Monitor) CompactSession(ctx context.Context, sessionID string, chatID, 
 		return fmt.Errorf("session %s not found", sessionID)
 	}
 
+	if session.CLI == "codex" {
+		return fmt.Errorf("Codex compact is not supported")
+	}
 	target := session.TmuxWindow
 	if target == "" {
 		target = session.TmuxSession
