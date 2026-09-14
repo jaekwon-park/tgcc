@@ -42,7 +42,11 @@ Each session executes one request at a time, with up to 16 waiting user messages
 | /status, /list, /list-archived | Include the session CLI |
 | /compact, /ctxstatus, /squash, /ctxconfig | Explicitly unsupported |
 
-Honcho history transfer and Claude transcript compaction are not implemented for Codex. Refresh and CLI changes do not translate conversation history between engines.
+When Honcho is enabled, /stop, /kill, /refresh, /restart and switching away from Codex attempt to save the user/assistant conversation from the native Codex rollout. The first request in a new Codex thread retrieves the topic's Honcho memory and recent conversation from the latest archived session, including a Claude predecessor. Resuming an existing thread does not inject memory again. A service restart that preserves the thread continues through Codex resume, not Honcho restoration.
+
+Rollout lookup uses [spawn.env].CODEX_HOME, the inherited CODEX_HOME, or ~/.codex, and verifies the thread metadata. Tool/reasoning events, bootstrap instructions and previously injected memory are excluded. Existing Codex conversations can be saved without having been started by this version. Native logs must remain available; missing or unreadable logs cannot be saved. Photos are not uploaded to Honcho; text captions are preserved.
+
+Persistence is best-effort, like Claude: a Honcho outage does not block stop or refresh. Recent archived conversation is used as a fallback when memory retrieval fails. Saves are lifecycle snapshots, not per-message ingestion, and repeated saves can duplicate history. The shared Honcho client uses v3 batch messages with peer_id, splits long text at 25,000 characters, and reads summary/messages as well as legacy context responses. Claude transcript compaction and /squash remain unsupported for Codex.
 
 The .notify-queue watcher uses the same dispatch path. When enabled, a successful Codex turn checks pending notifications so writes during a busy turn are not lost. An unchanged notification file is not drained repeatedly within the same worker. The agent remains responsible for consuming its notification file.
 

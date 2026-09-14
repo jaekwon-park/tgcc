@@ -94,7 +94,35 @@ func (c *HonchoClient) GetRepresentation(ctx context.Context, sessionID string) 
 		return "", fmt.Errorf("honcho: decode response: %w", err)
 	}
 
-	return cr.Context, nil
+	if cr.Context != "" {
+		return cr.Context, nil
+	}
+	var parts []string
+	if cr.PeerRepresentation != "" {
+		parts = append(parts, cr.PeerRepresentation)
+	}
+	parts = append(parts, cr.PeerCard...)
+	if len(cr.Summary) > 0 && string(cr.Summary) != "null" {
+		var summary string
+		if err := json.Unmarshal(cr.Summary, &summary); err != nil {
+			var structured struct {
+				Content string `json:"content"`
+			}
+			if err := json.Unmarshal(cr.Summary, &structured); err != nil {
+				return "", fmt.Errorf("honcho: decode summary: %w", err)
+			}
+			summary = structured.Content
+		}
+		if summary != "" {
+			parts = append(parts, summary)
+		}
+	}
+	for _, message := range cr.Messages {
+		if message.Content != "" {
+			parts = append(parts, message.PeerID+": "+message.Content)
+		}
+	}
+	return strings.Join(parts, "\n\n"), nil
 }
 
 // BuildResumeContext combines Honcho representation (if enabled) with the
@@ -114,14 +142,32 @@ func (c *HonchoClient) BuildResumeContext(ctx context.Context, sessionID string,
 }
 
 // CreateMessage sends a user message to a Honcho session for dialectic processing.
-// POST /v3/workspaces/{workspace}/sessions/{sessionID}/messages/create
+// POST /v3/workspaces/{workspace}/sessions/{sessionID}/messages
 func (c *HonchoClient) CreateMessage(ctx context.Context, sessionID, role, content string) error {
-	url := fmt.Sprintf("%s/v3/workspaces/%s/sessions/%s/messages/create", c.baseURL, c.workspace, sessionID)
+	runes := []rune(content)
+	var messages []map[string]string
+	for len(runes) > 25000 {
+		messages = append(messages, map[string]string{"peer_id": role, "content": string(runes[:25000])})
+		runes = runes[25000:]
+	}
+	messages = append(messages, map[string]string{"peer_id": role, "content": string(runes)})
+	for len(messages) > 0 {
+		count := min(len(messages), 100)
+		if err := c.createMessages(ctx, sessionID, messages[:count]); err != nil {
+			return err
+		}
+		messages = messages[count:]
+	}
+	return nil
+}
+
+func (c *HonchoClient) createMessages(ctx context.Context, sessionID string, messages []map[string]string) error {
+	url := fmt.Sprintf("%s/v3/workspaces/%s/sessions/%s/messages", c.baseURL, c.workspace, sessionID)
 
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	body := map[string]string{"role": role, "content": content}
+	body := map[string]any{"messages": messages}
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Errorf("honcho: marshal message: %w", err)
@@ -166,5 +212,12 @@ func (c *HonchoClient) SummarizeTurns(ctx context.Context, sessionID, turnsText 
 
 // contextResponse is the expected JSON shape from Honcho's /context endpoint.
 type contextResponse struct {
-	Context string `json:"context"`
+	Context            string          `json:"context"`
+	Summary            json.RawMessage `json:"summary"`
+	PeerRepresentation string          `json:"peer_representation"`
+	PeerCard           []string        `json:"peer_card"`
+	Messages           []struct {
+		PeerID  string `json:"peer_id"`
+		Content string `json:"content"`
+	} `json:"messages"`
 }

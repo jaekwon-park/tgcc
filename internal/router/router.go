@@ -1109,7 +1109,7 @@ func (r *Router) handleRefresh(ctx context.Context, update bot.Update, user *sto
 			r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "❌ 새로고침 실패: " + err.Error()})
 			return err
 		}
-		r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "🔄 새 세션을 준비했습니다. 이전 대화 문맥은 자동으로 승계되지 않습니다."})
+		r.sender.Enqueue(bot.OutgoingMsg{ChatID: chat.ID, ThreadID: threadID, Text: "🔄 새 세션을 준비했습니다. 다음 메시지에서 Honcho 기억과 최근 대화를 가능한 범위에서 복원합니다."})
 		return nil
 	}
 	summary := ""

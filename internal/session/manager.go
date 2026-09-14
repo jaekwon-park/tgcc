@@ -230,7 +230,7 @@ func (m *Manager) Kill(ctx context.Context, sessionID string) error {
 	}
 
 	if sess.CLI == "codex" {
-		return m.codex.stop(sessionID)
+		return m.stopCodex(ctx, sessionID)
 	}
 
 	// Transition to stopping
@@ -275,7 +275,7 @@ func (m *Manager) Stop(ctx context.Context, sessionID string) error {
 	}
 
 	if sess.CLI == "codex" {
-		return m.codex.stop(sessionID)
+		return m.stopCodex(ctx, sessionID)
 	}
 
 	// Transition to stopping
@@ -730,6 +730,10 @@ func (m *Manager) saveTranscriptToHoncho(ctx context.Context, sess *store.Sessio
 		return
 	}
 	transcriptPath := sess.TranscriptPath
+	if sess.CLI == "codex" {
+		m.saveCodexToHoncho(ctx, sess)
+		return
+	}
 	if transcriptPath == "" {
 		transcriptPath = deriveTranscriptPath(sess)
 	}
@@ -1051,6 +1055,7 @@ func (m *Manager) ConfigureCodex(bin string, typing *bot.TypingManager, drain bo
 	}
 	m.codex = newCodexRunner(m.store, bin, m.spawnEnv, output, typing, m.logger)
 	m.codex.drain = drain
+	m.codex.loadMemory = m.loadCodexMemory
 }
 
 func (m *Manager) Shutdown() {
@@ -1093,7 +1098,7 @@ func (m *Manager) spawnCodex(topic *store.Topic, workspace string) (*store.Sessi
 
 func (m *Manager) retireSession(ctx context.Context, sess *store.Session) error {
 	if sess.CLI == "codex" {
-		if err := m.codex.stop(sess.ID); err != nil {
+		if err := m.stopCodex(ctx, sess.ID); err != nil {
 			return err
 		}
 	} else if sess.Status != "stopped" && sess.Status != "failed" {

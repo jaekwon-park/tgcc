@@ -61,6 +61,7 @@ type codexRunner struct {
 	closed     bool
 	drain      bool
 	retryDelay time.Duration
+	loadMemory func(context.Context, *store.Session) string
 }
 
 func newCodexRunner(st *store.Store, bin string, env map[string]string, sender codexOutput, progress codexProgress, logger *slog.Logger) *codexRunner {
@@ -242,7 +243,13 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 	command := exec.CommandContext(cmdCtx, bin, args...)
 	command.Dir = sess.WorkspacePath
 	command.Env = append(env, "TGCC_CODEX_SESSION_ID="+sess.ID)
-	command.Stdin = strings.NewReader(message.text)
+	prompt := message.text
+	if sess.CodexThreadID == "" && runner.loadMemory != nil {
+		if memory := runner.loadMemory(worker.ctx, sess); memory != "" {
+			prompt = memory + "\n\n[Current User Message]\n" + prompt
+		}
+	}
+	command.Stdin = strings.NewReader(prompt)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		err := syscall.Kill(-command.Process.Pid, syscall.SIGKILL)
