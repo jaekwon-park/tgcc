@@ -183,7 +183,7 @@ func (m *Manager) loadCodexMemory(ctx context.Context, sess *store.Session) stri
 		}
 	}
 	if len(recent) > 64000 {
-		recent = strings.ToValidUTF8(recent[len(recent)-64000:], "")
+		recent = truncateUTF8Tail(recent, 64000)
 	}
 	if recent != "" {
 		recent = "[Recent Conversation]\n" + recent

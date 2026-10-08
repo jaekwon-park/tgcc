@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -913,12 +914,32 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 	return sb.String(), nil
 }
 
-// truncateString truncates a string to maxLen characters, adding "..." if truncated.
+// truncateString truncates s to at most maxLen bytes, never splitting a
+// multi-byte UTF-8 rune, and appends "..." when truncated. Byte-slicing a
+// string mid-rune (e.g. Korean text) yields invalid UTF-8 that breaks strict
+// consumers like Codex, which read the prompt from stdin.
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	cut := s[:maxLen]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut + "..."
+}
+
+// truncateUTF8Tail returns the last maxLen bytes of s without splitting a
+// multi-byte UTF-8 rune at the leading boundary, so the result is valid UTF-8.
+func truncateUTF8Tail(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	cut := s[len(s)-maxLen:]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[1:]
+	}
+	return cut
 }
 
 // SquashOldestNTurns reads a JSONL transcript, extracts the oldest N turns
