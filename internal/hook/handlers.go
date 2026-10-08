@@ -303,8 +303,10 @@ func (h *Handlers) extractLastAssistantMessage(transcriptPath string) string {
 	if err := scanner.Err(); err != nil {
 		h.logger.Warn("hook stop: scanner error reading transcript", "path", transcriptPath, "error", err)
 	}
-	if len(lastAssistant) > 4000 {
-		lastAssistant = lastAssistant[:4000]
+	// Cap by rune count, not bytes, so a multi-byte UTF-8 sequence (e.g. 한글)
+	// is never split in the middle into invalid UTF-8.
+	if runes := []rune(lastAssistant); len(runes) > 4000 {
+		lastAssistant = string(runes[:4000])
 	}
 	return lastAssistant
 }

@@ -842,11 +842,14 @@ func (m *Manager) SummarizeLastNTurns(transcriptPath string, n int) (string, err
 }
 
 // truncateString truncates a string to maxLen characters, adding "..." if truncated.
+// It slices by rune (not byte) so a multi-byte UTF-8 sequence (e.g. 한글) is never
+// split in the middle, which would otherwise produce invalid UTF-8 in the prompt.
 func truncateString(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	runes := []rune(s)
+	if len(runes) <= maxLen {
 		return s
 	}
-	return s[:maxLen] + "..."
+	return string(runes[:maxLen]) + "..."
 }
 
 // SquashOldestNTurns reads a JSONL transcript, extracts the oldest N turns
