@@ -390,6 +390,14 @@ type TopicConfig struct {
 	// AllowUsers restricts topic access to specific Telegram user IDs.
 	// When empty (nil), all owners (role=owner) can access the topic.
 	AllowUsers []int64 `toml:"allow_users"`
+	// RemoteSSHHost, when set, makes this topic run its CLI (codex) on a remote
+	// host over SSH instead of as a local subprocess. Format: "user@host"
+	// (e.g. "flcl@10.1.1.104"). Empty = local execution (default).
+	RemoteSSHHost string `toml:"remote_ssh_host"`
+	// RemoteWorkspacePath is the working directory on the remote host. Local
+	// workspace_path has no meaning on a remote Windows host, so this field
+	// replaces it (e.g. "C:\\Users\\FLCL\\re-analysis").
+	RemoteWorkspacePath string `toml:"remote_workspace_path"`
 }
 
 // GroupConfig represents a single [[group]] entry in tgcc.toml.

@@ -52,6 +52,7 @@ type codexWorker struct {
 type codexRunner struct {
 	store      *store.Store
 	bin        string
+	sshBin     string
 	env        map[string]string
 	sender     codexOutput
 	progress   codexProgress
@@ -65,7 +66,7 @@ type codexRunner struct {
 }
 
 func newCodexRunner(st *store.Store, bin string, env map[string]string, sender codexOutput, progress codexProgress, logger *slog.Logger) *codexRunner {
-	return &codexRunner{store: st, bin: bin, env: env, sender: sender, progress: progress, logger: logger,
+	return &codexRunner{store: st, bin: bin, sshBin: "ssh", env: env, sender: sender, progress: progress, logger: logger,
 		workers: make(map[string]*codexWorker), retryDelay: 2 * time.Second}
 }
 
@@ -234,14 +235,22 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 	}
 	args = append(args, "-")
 	env := mergedCodexEnv(runner.env)
-	bin, err := resolveCodexBin(runner.bin, env)
-	if err != nil {
-		return false, err
-	}
+
 	cmdCtx, cancel := context.WithCancel(worker.ctx)
 	defer cancel()
-	command := exec.CommandContext(cmdCtx, bin, args...)
-	command.Dir = sess.WorkspacePath
+
+	remoteHost := worker.topic.RemoteSSHHost
+	var command *exec.Cmd
+	if remoteHost != "" {
+		command = runner.buildRemoteCodexCmd(cmdCtx, remoteHost, worker.topic.RemoteWorkspacePath, args)
+	} else {
+		bin, err := resolveCodexBin(runner.bin, env)
+		if err != nil {
+			return false, err
+		}
+		command = exec.CommandContext(cmdCtx, bin, args...)
+		command.Dir = sess.WorkspacePath
+	}
 	command.Env = append(env, "TGCC_CODEX_SESSION_ID="+sess.ID)
 	prompt := message.text
 	if sess.CodexThreadID == "" && runner.loadMemory != nil {
@@ -285,6 +294,9 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 	command.Stdout = parser
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
+		if remoteHost != "" {
+			return false, fmt.Errorf("원격 호스트 %s 연결 실패: %w", remoteHost, err)
+		}
 		return false, err
 	}
 	started, _, err := codexProcessIdentity(int64(command.Process.Pid))
@@ -304,12 +316,63 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 		return parser.advanced, parseErr
 	}
 	if waitErr != nil {
+		if remoteHost != "" {
+			return parser.advanced, fmt.Errorf("원격 호스트 %s 연결 실패: %w: %s", remoteHost, waitErr, strings.TrimSpace(stderr.String()))
+		}
 		return parser.advanced, fmt.Errorf("codex exit: %w: %s", waitErr, strings.TrimSpace(stderr.String()))
 	}
 	if !parser.completed || sess.CodexThreadID == "" {
+		if remoteHost != "" {
+			return parser.advanced, fmt.Errorf("원격 Codex가 완료된 턴/스레드 없이 종료되었습니다")
+		}
 		return parser.advanced, fmt.Errorf("Codex exited without a completed turn/thread")
 	}
 	return parser.advanced, nil
+}
+
+// buildRemoteCodexCmd constructs an `ssh` command that runs `codex` on a remote
+// host. The remote command line is passed as a single quoted argument so the
+// remote shell (cmd.exe on Windows) receives it verbatim, and stdin is left
+// connected to the SSH pipe so the prompt flows through unchanged.
+func (runner *codexRunner) buildRemoteCodexCmd(ctx context.Context, host, workspace string, args []string) *exec.Cmd {
+	remote := buildRemoteCommandLine(workspace, args)
+	return exec.CommandContext(ctx, runner.sshBin, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote)
+}
+
+// buildRemoteCommandLine renders the codex command to run on the remote host.
+// args = ["exec"] or ["exec", "resume"], followed by flags, the optional
+// thread id, and finally "-" (read prompt from stdin). `--cd <workspace>` is
+// inserted right after the subcommand prefix so it stays grouped with the
+// flags, before the positional prompt.
+func buildRemoteCommandLine(workspace string, args []string) string {
+	head := args[:1]
+	if len(args) > 1 && args[1] == "resume" {
+		head = args[:2]
+	}
+	remoteArgs := make([]string, 0, len(args)+2)
+	remoteArgs = append(remoteArgs, head...)
+	remoteArgs = append(remoteArgs, "--cd", workspace)
+	remoteArgs = append(remoteArgs, args[len(head):]...)
+
+	remote := "codex"
+	for _, arg := range remoteArgs {
+		remote += " " + cmdQuote(arg)
+	}
+	return remote
+}
+
+// cmdQuote quotes a single argument for cmd.exe. Plain tokens pass through
+// unchanged; anything containing whitespace or cmd.exe metacharacters is
+// wrapped in double quotes with embedded double quotes doubled. Backslashes
+// are left alone — cmd.exe treats them as literal path separators, not escapes.
+func cmdQuote(arg string) string {
+	if arg == "" {
+		return `""`
+	}
+	if !strings.ContainsAny(arg, " \t\"&|<>^()%!") {
+		return arg
+	}
+	return `"` + strings.ReplaceAll(arg, `"`, `""`) + `"`
 }
 
 func (runner *codexRunner) stop(sessionID string) error {

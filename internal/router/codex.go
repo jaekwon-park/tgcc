@@ -15,11 +15,19 @@ func (r *Router) handleCodexMessage(ctx context.Context, update bot.Update, topi
 		return err
 	}
 	if sess == nil || sess.CLI != topic.CLI {
-		if topic.WorkspacePath == "" {
-			r.sender.Enqueue(bot.OutgoingMsg{ChatID: topic.ChatID, ThreadID: topic.ThreadID, Text: "/new <workspace>로 시작하세요."})
+		workspace := topic.WorkspacePath
+		if topic.RemoteSSHHost != "" {
+			workspace = topic.RemoteWorkspacePath
+		}
+		if workspace == "" {
+			message := "/new <workspace>로 시작하세요."
+			if topic.RemoteSSHHost != "" {
+				message = "원격 토픽에는 remote_workspace_path 설정이 필요합니다."
+			}
+			r.sender.Enqueue(bot.OutgoingMsg{ChatID: topic.ChatID, ThreadID: topic.ThreadID, Text: message})
 			return nil
 		}
-		sess, err = r.mgr.Spawn(ctx, topic.ID, topic.WorkspacePath, topic.ChatID, topic.ThreadID, topic.ClaudeModel.String)
+		sess, err = r.mgr.Spawn(ctx, topic.ID, workspace, topic.ChatID, topic.ThreadID, topic.ClaudeModel.String)
 		if err != nil {
 			r.sender.Enqueue(bot.OutgoingMsg{ChatID: topic.ChatID, ThreadID: topic.ThreadID, Text: "❌ Codex 시작 실패: " + err.Error()})
 			return err

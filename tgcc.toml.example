@@ -46,3 +46,14 @@ chat_id = -1001234567890
   cli               = "codex"
   model             = "gpt-5.5"
   workspace_path    = "/home/insainty/projects/codex-topic"
+
+  # Remote(SSH) Codex topic — runs `codex exec` on a Windows host instead of
+  # a local subprocess. When remote_ssh_host is set, workspace_path is ignored
+  # (leave it empty) and remote_workspace_path becomes the working directory
+  # on the remote host. SSH must be passwordless (key-based) from the tgcc host.
+  # [[group.topic]]
+  # thread_id              = 19350
+  # cli                    = "codex"
+  # model                  = "gpt-5.5"
+  # remote_ssh_host        = "flcl@10.1.1.104"
+  # remote_workspace_path  = "C:\\Users\\FLCL\\re-analysis"

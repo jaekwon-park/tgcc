@@ -36,7 +36,7 @@ func (transport *codexTransport) RoundTrip(request *http.Request) (*http.Respons
 }
 
 func TestCodexCommands(t *testing.T) {
-	st := testutil.Store(t, 9)
+	st := testutil.Store(t, 10)
 	topic, err := st.InsertTopic(-1, 1, "codex")
 	if err != nil {
 		t.Fatal(err)

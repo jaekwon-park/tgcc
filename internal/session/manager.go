@@ -1088,12 +1088,17 @@ func (m *Manager) ForwardImages(ctx context.Context, sessionID, text string, ima
 }
 
 func (m *Manager) spawnCodex(topic *store.Topic, workspace string) (*store.Session, error) {
-	info, err := os.Stat(workspace)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("workspace is not a directory: %s", workspace)
+	// Remote topics run codex over SSH on a Windows host, so their workspace
+	// path (remote_workspace_path) is not a local directory. Skip the local
+	// existence check in that case.
+	if topic.RemoteSSHHost == "" {
+		info, err := os.Stat(workspace)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			return nil, fmt.Errorf("workspace is not a directory: %s", workspace)
+		}
 	}
 	existing, err := m.store.SessionByTopicID(topic.ID)
 	if err != nil {

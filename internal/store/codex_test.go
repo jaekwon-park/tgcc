@@ -22,6 +22,15 @@ func TestCLIUpgradeAndSessionQueries(t *testing.T) {
 	if _, err := st.DB.Exec(string(migration)); err != nil {
 		t.Fatal(err)
 	}
+	// TopicByID now selects remote_ssh_host/remote_workspace_path, so apply
+	// migration 0010 as well to make the columns available.
+	remoteMigration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0010_remote_ssh.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(string(remoteMigration)); err != nil {
+		t.Fatal(err)
+	}
 	legacy, err := st.SessionByID("old")
 	if err != nil || legacy.CLI != "claude" {
 		t.Fatalf("legacy migration: %+v %v", legacy, err)
@@ -84,5 +93,34 @@ func TestCLIUpgradeAndSessionQueries(t *testing.T) {
 	defer rows.Close()
 	if rows.Next() {
 		t.Fatal("foreign key violation")
+	}
+}
+
+func TestUpdateTopicRemote(t *testing.T) {
+	st := testutil.Store(t, 10)
+	topic, err := st.InsertTopic(-1, 1, "remote")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.UpdateTopicRemote(topic.ID, "flcl@10.1.1.104", `C:\Users\FLCL\re-analysis`); err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.TopicByID(topic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RemoteSSHHost != "flcl@10.1.1.104" || got.RemoteWorkspacePath != `C:\Users\FLCL\re-analysis` {
+		t.Fatalf("remote fields not persisted: %+v", got)
+	}
+	// Removing the fields reverts the topic to local execution.
+	if err := st.UpdateTopicRemote(topic.ID, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	got, err = st.TopicByID(topic.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.RemoteSSHHost != "" || got.RemoteWorkspacePath != "" {
+		t.Fatalf("remote fields not cleared: %+v", got)
 	}
 }
