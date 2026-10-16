@@ -53,12 +53,22 @@ func TestBuildRemoteCommandLine(t *testing.T) {
 		t.Fatalf("quoted: got %q, want %q", got, want)
 	}
 
-	// Resume keeps the subcommand prefix before --cd.
+	// Resume must NOT include --cd: `codex exec resume` has no --cd flag and
+	// reuses the cwd recorded at session creation. Adding it made the CLI fail
+	// to parse on the second and subsequent messages of a session.
 	resumeArgs := []string{"exec", "resume", "--json", "--model", "gpt-5.5", "thread-one", "-"}
 	got = buildRemoteCommandLine(`C:\Users\FLCL\re-analysis`, resumeArgs)
-	want = `codex exec resume --cd C:\Users\FLCL\re-analysis --json --model gpt-5.5 thread-one -`
+	want = `codex exec resume --json --model gpt-5.5 thread-one -`
 	if got != want {
 		t.Fatalf("resume: got %q, want %q", got, want)
+	}
+
+	// A bare "resume" (no trailing flags/thread) also omits --cd.
+	bareResumeArgs := []string{"exec", "resume"}
+	got = buildRemoteCommandLine(`C:\Users\FLCL\re-analysis`, bareResumeArgs)
+	want = `codex exec resume`
+	if got != want {
+		t.Fatalf("bare resume: got %q, want %q", got, want)
 	}
 }
 

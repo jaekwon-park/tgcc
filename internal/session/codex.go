@@ -343,15 +343,20 @@ func (runner *codexRunner) buildRemoteCodexCmd(ctx context.Context, host, worksp
 // args = ["exec"] or ["exec", "resume"], followed by flags, the optional
 // thread id, and finally "-" (read prompt from stdin). `--cd <workspace>` is
 // inserted right after the subcommand prefix so it stays grouped with the
-// flags, before the positional prompt.
+// flags, before the positional prompt. It is omitted for `resume`: `codex exec
+// resume` does not accept a `--cd` flag (it reuses the cwd recorded when the
+// session was created), so passing it makes the CLI fail to parse.
 func buildRemoteCommandLine(workspace string, args []string) string {
 	head := args[:1]
-	if len(args) > 1 && args[1] == "resume" {
+	isResume := len(args) > 1 && args[1] == "resume"
+	if isResume {
 		head = args[:2]
 	}
 	remoteArgs := make([]string, 0, len(args)+2)
 	remoteArgs = append(remoteArgs, head...)
-	remoteArgs = append(remoteArgs, "--cd", workspace)
+	if !isResume {
+		remoteArgs = append(remoteArgs, "--cd", workspace)
+	}
 	remoteArgs = append(remoteArgs, args[len(head):]...)
 
 	remote := "codex"
