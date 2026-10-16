@@ -313,6 +313,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 						if err := st.UpdateTopicRequireMention(id, tc.RequireMention); err != nil {
 							logger.Warn("update require_mention failed", "topic_id", topicID, "error", err)
 						}
+						// Sync remote(SSH) execution fields. Always written so
+						// removing them from tgcc.toml reverts to local execution.
+						if err := st.UpdateTopicRemote(id, tc.RemoteSSHHost, tc.RemoteWorkspacePath); err != nil {
+							logger.Warn("update remote_ssh failed", "topic_id", topicID, "error", err)
+						}
 					}
 					synced++
 					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)

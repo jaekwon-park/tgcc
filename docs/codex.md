@@ -26,6 +26,23 @@ Only claude and codex are valid CLI values. Unknown values fail startup. Codex a
 
 Codex runs with --dangerously-bypass-approvals-and-sandbox, following this deployment's existing direct-host, approval-free execution policy. This bypasses Codex sandboxing and interactive approval. It does not remove systemd filesystem restrictions. Execpolicy rules are an additional, version-dependent control, not a guarantee that all dangerous commands are blocked. This feature does not change global Codex rules.
 
+## Remote (SSH) execution
+
+A topic can run Codex on a remote host over SSH instead of a local subprocess by setting `remote_ssh_host`. This is intended for a single Windows host (e.g. a reverse-engineering workstation running Codex + Ghidra); it is not a general multi-host framework.
+
+```toml
+[[group.topic]]
+thread_id             = 19350
+cli                   = "codex"
+model                 = "gpt-5.5"
+remote_ssh_host       = "flcl@10.1.1.104"
+remote_workspace_path = "C:\\Users\\FLCL\\re-analysis"
+```
+
+When `remote_ssh_host` is set, `workspace_path` is ignored (leave it empty) and `remote_workspace_path` becomes the working directory, passed to codex via `--cd`. The SSH connection must already be passwordless (key-based) from the tgcc host, and the remote host must have `codex` on its PATH. tgcc wraps the local `codex exec` command in `ssh -o BatchMode=yes -o ConnectTimeout=10 <host> "<remote command>"`; the prompt flows over SSH stdin and the JSONL stdout is parsed by the same logic as local execution. The remote command line is quoted for cmd.exe, so Windows paths and spaces are preserved.
+
+Remote execution is minimal: photos are not forwarded to the remote host, `.notify-queue` draining does not apply, and Honcho transcript persistence relies on local rollout files and so does not capture remote conversations. SSH connection failures are reported to the user as a clear "원격 호스트 연결 실패" error. Removing `remote_ssh_host` from tgcc.toml and restarting reverts the topic to local execution.
+
 ## Messages and commands
 
 Each request starts a short-lived codex exec process; later requests use exec resume with the saved thread ID. Prompts use stdin, photos use --image, and non-Git workspaces are supported. Assistant JSON events are relayed to Telegram and long messages are split.
@@ -68,7 +85,7 @@ go test -race -cover ./...
 
 Tests use fake Codex subprocesses and isolated SQLite databases. They cover thread continuity, models, photos, serial queues, independent topics, cancellation, writer retries, malformed/large output, commands, CLI switching and orphan recovery. They do not call a model or the live Telegram API.
 
-Migration 0009 adds topic/session CLI, Codex thread ID and process start identity. Ship migrations beside the executable. Do not run the new binary against the live database just to test it: opening the store applies migrations.
+Migration 0009 adds topic/session CLI, Codex thread ID and process start identity. Migration 0010 adds `remote_ssh_host` and `remote_workspace_path` to topics. Ship migrations beside the executable. Do not run the new binary against the live database just to test it: opening the store applies migrations.
 
 Before deployment, back up the live WAL database with SQLite's backup API or sqlite3 .backup; copying only state.db while it is open is insufficient. Test migration and integrity/foreign-key checks on a copy, then stage the binary, SQL, TOML and service configuration. Start with one Codex topic and verify real messages, resume, images, cancellation, queue delivery, restart recovery and an existing Claude topic.
 
