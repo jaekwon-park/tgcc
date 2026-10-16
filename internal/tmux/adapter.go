@@ -161,7 +161,7 @@ func (a *Adapter) KillWindow(target string) error {
 // unsent in the input box (looks like "no response"). The delay scales with the
 // message so short single-line sends stay snappy.
 func (a *Adapter) SendKeys(target, text string) error {
-	if _, err := a.run("send-keys", "-t", target, "-l", "--", text); err != nil {
+	if _, err := a.run("send-keys", "-t", target, "-l", text); err != nil {
 		return fmt.Errorf("send-keys text %s: %w", target, err)
 	}
 	time.Sleep(submitDelay(text))
