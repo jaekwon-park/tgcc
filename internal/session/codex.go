@@ -24,6 +24,18 @@ import (
 const codexQueueLimit = 16
 const codexJSONLimit = 4 * 1024 * 1024
 
+// Wake-on-LAN settings for remote Codex hosts that may be powered off.
+// vm13 cannot reach the 10.1.1.0/24 broadcast directly (Cloudflare WARP routes
+// individual IPs only, so L2 broadcast is unavailable), so the magic packet is
+// relayed through a host that sits on that subnet.
+//
+// TODO(ADM-1260): move these into per-topic config (toml + DB wol_mac /
+// wol_relay_host columns) instead of hardcoding.
+const (
+	wolRelayHost = "insainty@10.1.1.21"
+	wolTargetMAC = "a0:ad:9f:cd:5e:8a"
+)
+
 type codexOutput interface {
 	Enqueue(bot.OutgoingMsg)
 }
@@ -50,24 +62,28 @@ type codexWorker struct {
 }
 
 type codexRunner struct {
-	store      *store.Store
-	bin        string
-	sshBin     string
-	env        map[string]string
-	sender     codexOutput
-	progress   codexProgress
-	logger     *slog.Logger
-	mu         sync.Mutex
-	workers    map[string]*codexWorker
-	closed     bool
-	drain      bool
-	retryDelay time.Duration
-	loadMemory func(context.Context, *store.Session) string
+	store          *store.Store
+	bin            string
+	sshBin         string
+	env            map[string]string
+	sender         codexOutput
+	progress       codexProgress
+	logger         *slog.Logger
+	mu             sync.Mutex
+	workers        map[string]*codexWorker
+	closed         bool
+	drain          bool
+	retryDelay     time.Duration
+	wolInterval    time.Duration
+	wolMaxAttempts int
+	wolTimeout     time.Duration
+	loadMemory     func(context.Context, *store.Session) string
 }
 
 func newCodexRunner(st *store.Store, bin string, env map[string]string, sender codexOutput, progress codexProgress, logger *slog.Logger) *codexRunner {
 	return &codexRunner{store: st, bin: bin, sshBin: "ssh", env: env, sender: sender, progress: progress, logger: logger,
-		workers: make(map[string]*codexWorker), retryDelay: 2 * time.Second}
+		workers: make(map[string]*codexWorker), retryDelay: 2 * time.Second,
+		wolInterval: 12 * time.Second, wolMaxAttempts: 5, wolTimeout: 90 * time.Second}
 }
 
 func (runner *codexRunner) enqueue(ctx context.Context, sessionID string, message codexMessage) error {
@@ -239,25 +255,77 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 	cmdCtx, cancel := context.WithCancel(worker.ctx)
 	defer cancel()
 
-	remoteHost := worker.topic.RemoteSSHHost
-	var command *exec.Cmd
-	if remoteHost != "" {
-		command = runner.buildRemoteCodexCmd(cmdCtx, remoteHost, worker.topic.RemoteWorkspacePath, args)
-	} else {
-		bin, err := resolveCodexBin(runner.bin, env)
-		if err != nil {
-			return false, err
-		}
-		command = exec.CommandContext(cmdCtx, bin, args...)
-		command.Dir = sess.WorkspacePath
-	}
-	command.Env = append(env, "TGCC_CODEX_SESSION_ID="+sess.ID)
 	prompt := message.text
 	if sess.CodexThreadID == "" && runner.loadMemory != nil {
 		if memory := runner.loadMemory(worker.ctx, sess); memory != "" {
 			prompt = memory + "\n\n[Current User Message]\n" + prompt
 		}
 	}
+
+	remoteHost := worker.topic.RemoteSSHHost
+	if remoteHost != "" {
+		return runner.executeRemote(worker, sess, cmdCtx, cancel, remoteHost, worker.topic.RemoteWorkspacePath, args, env, prompt)
+	}
+
+	bin, err := resolveCodexBin(runner.bin, env)
+	if err != nil {
+		return false, err
+	}
+	command := exec.CommandContext(cmdCtx, bin, args...)
+	command.Dir = sess.WorkspacePath
+	command.Env = append(env, "TGCC_CODEX_SESSION_ID="+sess.ID)
+	return runner.runCodexCommand(worker, sess, command, prompt, cancel, "")
+}
+
+// executeRemote runs codex over SSH on a remote host. When the SSH connection
+// fails at the TCP layer (host powered off or unreachable), it sends a
+// Wake-on-LAN magic packet via the relay host and retries the command.
+func (runner *codexRunner) executeRemote(worker *codexWorker, sess *store.Session, cmdCtx context.Context, cancel context.CancelFunc, host, workspace string, args, env []string, prompt string) (bool, error) {
+	advanced := false
+	deadline := time.Now().Add(runner.wolTimeout)
+	for attempt := 0; ; attempt++ {
+		command := runner.buildRemoteCodexCmd(cmdCtx, host, workspace, args)
+		command.Env = append(env, "TGCC_CODEX_SESSION_ID="+sess.ID)
+		adv, err := runner.runCodexCommand(worker, sess, command, prompt, cancel, host)
+		if adv {
+			advanced = true
+		}
+		if err == nil {
+			return advanced, nil
+		}
+		if worker.ctx.Err() != nil {
+			return advanced, worker.ctx.Err()
+		}
+		if !isSSHConnectionFailure(err) {
+			return advanced, err
+		}
+
+		// The remote host is unreachable at the TCP level — most likely powered
+		// off. Wake it once, tell the user, then keep retrying.
+		if attempt == 0 {
+			runner.logger.Warn("codex remote ssh unreachable, attempting WOL wake", "session_id", sess.ID, "host", host, "error", err)
+			runner.notify(worker.topic, fmt.Sprintf("💤 원격 호스트 %s가 꺼져 있는 것 같습니다. Wake-on-LAN으로 깨우는 중입니다... (최대 %d회 재시도)", host, runner.wolMaxAttempts))
+			if err := runner.sendWOLMagicPacket(cmdCtx, host); err != nil {
+				runner.logger.Warn("wol magic packet failed", "host", host, "error", err)
+			}
+		}
+
+		if attempt+1 >= runner.wolMaxAttempts || time.Now().Add(runner.wolInterval).After(deadline) {
+			return advanced, fmt.Errorf("원격 호스트 %s 연결 실패 (WOL 재시도 %d회 후 실패): %w", host, attempt+1, err)
+		}
+		select {
+		case <-worker.ctx.Done():
+			return advanced, worker.ctx.Err()
+		case <-time.After(runner.wolInterval):
+		}
+	}
+}
+
+// runCodexCommand wires up stdin/stdout/stderr and process controls for a
+// single codex command, then starts it, records its identity, waits for it,
+// and parses the JSONL stream. remoteHost is non-empty when running over SSH;
+// it only affects the error message wording.
+func (runner *codexRunner) runCodexCommand(worker *codexWorker, sess *store.Session, command *exec.Cmd, prompt string, cancel context.CancelFunc, remoteHost string) (bool, error) {
 	command.Stdin = strings.NewReader(prompt)
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
@@ -337,6 +405,60 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 func (runner *codexRunner) buildRemoteCodexCmd(ctx context.Context, host, workspace string, args []string) *exec.Cmd {
 	remote := buildRemoteCommandLine(workspace, args)
 	return exec.CommandContext(ctx, runner.sshBin, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", host, remote)
+}
+
+// isSSHConnectionFailure reports whether err indicates the remote SSH host was
+// unreachable at the TCP layer (host powered off / network unreachable), as
+// opposed to an auth failure or a codex-side error. It matches the OpenSSH
+// client messages "connect to host <h> port 22: Connection timed out" and
+// "Connection refused".
+func isSSHConnectionFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "port 22") && !strings.Contains(msg, "connect to host") {
+		return false
+	}
+	return strings.Contains(msg, "Connection timed out") || strings.Contains(msg, "Connection refused")
+}
+
+// sendWOLMagicPacket sends a Wake-on-LAN magic packet to wolTargetMAC by running
+// a small python one-liner on the relay host, which sits on the same 10.1.1.0/24
+// subnet as the target. The packet is broadcast to both the subnet broadcast
+// address and the limited broadcast address to maximise delivery.
+func (runner *codexRunner) sendWOLMagicPacket(ctx context.Context, targetHost string) error {
+	remote := "python3 -c " + shellQuote(wolMagicPacketScript(wolTargetMAC))
+	command := exec.CommandContext(ctx, runner.sshBin, "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", wolRelayHost, remote)
+	command.Env = mergedCodexEnv(runner.env)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("relay %s WOL 전송 실패: %w: %s", wolRelayHost, err, strings.TrimSpace(string(output)))
+	}
+	runner.logger.Info("wol magic packet sent", "relay_host", wolRelayHost, "target_mac", wolTargetMAC, "target_host", targetHost)
+	return nil
+}
+
+// wolMagicPacketScript renders the python source that constructs and sends a
+// Wake-on-LAN magic packet. mac must be a colon-separated hex address. The
+// script uses only double quotes so it can be wrapped in single quotes for the
+// remote POSIX shell (no embedded single quotes to escape).
+func wolMagicPacketScript(mac string) string {
+	return `import socket
+mac="` + mac + `"
+mac_bytes=bytes.fromhex(mac.replace(":",""))
+packet=b"\xff"*6 + mac_bytes*16
+s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+s.sendto(packet, ("10.1.1.255", 9))
+s.sendto(packet, ("255.255.255.255", 7))
+`
+}
+
+// shellQuote wraps s in single quotes for a POSIX shell, escaping any embedded
+// single quotes. Used to pass the multi-line python script through ssh safely.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // buildRemoteCommandLine renders the codex command to run on the remote host.
