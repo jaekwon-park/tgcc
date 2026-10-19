@@ -23,6 +23,13 @@ import (
 	"github.com/jaekwon-park/tgcc/internal/tmux"
 )
 
+// ErrWindowGone is returned by ForwardMessage when the tmux window backing a
+// session no longer exists — most commonly a resumed `claude --resume`
+// process that exited immediately because its transcript/session id is no
+// longer resumable. Callers can match it with errors.Is to retry against a
+// freshly spawned session instead of just reporting the failure.
+var ErrWindowGone = fmt.Errorf("tmux window not found")
+
 // Manager handles spawn/kill/resume of Claude Code sessions.
 type Manager struct {
 	lifecycleMu    sync.Mutex
@@ -440,7 +447,17 @@ func (m *Manager) ForwardMessage(ctx context.Context, sessionID string, text str
 	}
 
 	target := sess.TmuxWindow
-	return m.adapter.SendKeys(target, text)
+	if err := m.adapter.SendKeys(target, text); err != nil {
+		// The window is gone — mark the session failed instead of leaving it
+		// "active" forever on a dead window. Without this, every subsequent
+		// message in the topic hits the exact same send-keys error and the
+		// session can only be unstuck with a manual DB fix (ADM-1178/1253).
+		if ferr := m.store.UpdateSessionStatus(sessionID, string(StatusFailed)); ferr != nil {
+			m.logger.Warn("forwardmsg: mark failed after send-keys error", "error", ferr, "session_id", sessionID)
+		}
+		return fmt.Errorf("%w: %s", ErrWindowGone, err)
+	}
+	return nil
 }
 
 // GetSession returns a session by ID.
