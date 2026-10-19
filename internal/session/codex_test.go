@@ -59,7 +59,7 @@ func (capture *codexCapture) texts() string {
 
 func codexFixture(t *testing.T) (*Manager, *store.Session, *codexCapture) {
 	t.Helper()
-	st := testutil.Store(t, 10)
+	st := testutil.Store(t, 11)
 	topic, err := st.InsertTopic(-1, 1, "codex")
 	if err != nil {
 		t.Fatal(err)

@@ -102,7 +102,7 @@ func TestRemoteSSHProcess(t *testing.T) {
 }
 
 func TestCodexRemoteExecution(t *testing.T) {
-	st := testutil.Store(t, 10)
+	st := testutil.Store(t, 11)
 	topic, err := st.InsertTopic(-1, 1, "codex-remote")
 	if err != nil {
 		t.Fatal(err)
