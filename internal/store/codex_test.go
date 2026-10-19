@@ -31,6 +31,15 @@ func TestCLIUpgradeAndSessionQueries(t *testing.T) {
 	if _, err := st.DB.Exec(string(remoteMigration)); err != nil {
 		t.Fatal(err)
 	}
+	// TopicByID now also selects wol_mac/wol_relay_host, so apply migration
+	// 0011 to make those columns available too.
+	wolMigration, err := os.ReadFile(filepath.Join("..", "..", "migrations", "0011_wol_wake.sql"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.DB.Exec(string(wolMigration)); err != nil {
+		t.Fatal(err)
+	}
 	legacy, err := st.SessionByID("old")
 	if err != nil || legacy.CLI != "claude" {
 		t.Fatalf("legacy migration: %+v %v", legacy, err)
@@ -97,7 +106,7 @@ func TestCLIUpgradeAndSessionQueries(t *testing.T) {
 }
 
 func TestUpdateTopicRemote(t *testing.T) {
-	st := testutil.Store(t, 10)
+	st := testutil.Store(t, 11)
 	topic, err := st.InsertTopic(-1, 1, "remote")
 	if err != nil {
 		t.Fatal(err)

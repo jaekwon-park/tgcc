@@ -62,12 +62,16 @@ type codexRunner struct {
 	closed     bool
 	drain      bool
 	retryDelay time.Duration
-	loadMemory func(context.Context, *store.Session) string
+	// WOL wake retry tuning for remote(SSH) topics.
+	wolRetryDelay    time.Duration
+	wolRetryAttempts int
+	loadMemory       func(context.Context, *store.Session) string
 }
 
 func newCodexRunner(st *store.Store, bin string, env map[string]string, sender codexOutput, progress codexProgress, logger *slog.Logger) *codexRunner {
 	return &codexRunner{store: st, bin: bin, sshBin: "ssh", env: env, sender: sender, progress: progress, logger: logger,
-		workers: make(map[string]*codexWorker), retryDelay: 2 * time.Second}
+		workers: make(map[string]*codexWorker), retryDelay: 2 * time.Second,
+		wolRetryDelay: 15 * time.Second, wolRetryAttempts: 5}
 }
 
 func (runner *codexRunner) enqueue(ctx context.Context, sessionID string, message codexMessage) error {
@@ -234,12 +238,64 @@ func (runner *codexRunner) execute(worker *codexWorker, sess *store.Session, mes
 		args = append(args, sess.CodexThreadID)
 	}
 	args = append(args, "-")
+
+	remoteHost := worker.topic.RemoteSSHHost
+	if remoteHost == "" {
+		return runner.attemptCodex(worker, sess, message, args, "")
+	}
+
+	advanced, err := runner.attemptCodex(worker, sess, message, args, remoteHost)
+	if err == nil || !isSSHConnectFailure(err) {
+		return advanced, err
+	}
+
+	// Remote host unreachable. If the topic has WOL config, wake it and retry
+	// the SSH connect a bounded number of times instead of failing immediately.
+	wolMAC := worker.topic.WolMAC
+	wolRelayHost := worker.topic.WolRelayHost
+	if wolMAC == "" || wolRelayHost == "" {
+		return advanced, err
+	}
+
+	runner.logger.Warn("codex remote ssh unreachable, attempting WOL wake",
+		"session_id", sess.ID, "remote_host", remoteHost,
+		"wol_relay_host", wolRelayHost, "wol_mac", wolMAC)
+	if wakeErr := runner.sendWOL(worker.ctx, wolRelayHost, wolMAC); wakeErr != nil {
+		runner.logger.Error("WOL wake failed", "wol_relay_host", wolRelayHost, "wol_mac", wolMAC, "error", wakeErr)
+	} else {
+		runner.notify(worker.topic, fmt.Sprintf("⏳ 원격 호스트 %s가 꺼져 있어 Wake-on-LAN으로 깨우는 중입니다. 부팅 후 자동으로 재시도합니다...", remoteHost))
+	}
+
+	for attempt := 1; attempt <= runner.wolRetryAttempts; attempt++ {
+		if err := worker.ctx.Err(); err != nil {
+			return false, err
+		}
+		select {
+		case <-worker.ctx.Done():
+			return false, worker.ctx.Err()
+		case <-time.After(runner.wolRetryDelay):
+		}
+		advanced, err = runner.attemptCodex(worker, sess, message, args, remoteHost)
+		if err == nil {
+			runner.logger.Info("codex remote ssh recovered after WOL wake", "session_id", sess.ID, "attempt", attempt+1)
+			return advanced, nil
+		}
+		if !isSSHConnectFailure(err) {
+			return advanced, err
+		}
+	}
+	return advanced, fmt.Errorf("원격 호스트 %s가 부팅되지 않았습니다. 직접 확인이 필요합니다 (마지막 오류: %v)", remoteHost, err)
+}
+
+// attemptCodex launches a single codex (or remote ssh codex) process and waits
+// for it to finish, returning the parser's `advanced` flag and any error. It is
+// the unit of work retried by execute() when WOL wake is configured.
+func (runner *codexRunner) attemptCodex(worker *codexWorker, sess *store.Session, message codexMessage, args []string, remoteHost string) (bool, error) {
 	env := mergedCodexEnv(runner.env)
 
 	cmdCtx, cancel := context.WithCancel(worker.ctx)
 	defer cancel()
 
-	remoteHost := worker.topic.RemoteSSHHost
 	var command *exec.Cmd
 	if remoteHost != "" {
 		command = runner.buildRemoteCodexCmd(cmdCtx, remoteHost, worker.topic.RemoteWorkspacePath, args)

@@ -398,6 +398,16 @@ type TopicConfig struct {
 	// workspace_path has no meaning on a remote Windows host, so this field
 	// replaces it (e.g. "C:\\Users\\FLCL\\re-analysis").
 	RemoteWorkspacePath string `toml:"remote_workspace_path"`
+	// WolMAC is the MAC address of the remote host used for Wake-on-LAN. When
+	// set together with WolRelayHost, a failed SSH connect to the remote host
+	// triggers a WOL magic packet + bounded retry loop instead of an immediate
+	// error (e.g. "a0:ad:9f:cd:5e:8a"). Empty = no WOL retry.
+	WolMAC string `toml:"wol_mac"`
+	// WolRelayHost is an SSH host on the same L2 subnet as the remote host that
+	// broadcasts the WOL magic packet on tgcc's behalf. tgcc itself cannot
+	// reach the remote subnet's broadcast address directly, so the relay host
+	// (e.g. "insainty@10.1.1.21") must send it. Empty = no WOL retry.
+	WolRelayHost string `toml:"wol_relay_host"`
 }
 
 // GroupConfig represents a single [[group]] entry in tgcc.toml.

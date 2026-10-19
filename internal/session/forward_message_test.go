@@ -37,7 +37,7 @@ exit 0
 
 func newTestManagerWithDeadWindow(t *testing.T) (*Manager, *store.Store, string) {
 	t.Helper()
-	st := testutil.Store(t, 10)
+	st := testutil.Store(t, 11)
 	topic, err := st.InsertTopic(-1, 1, "test-topic")
 	if err != nil {
 		t.Fatal(err)

@@ -318,6 +318,11 @@ func runServe(ctx context.Context, cfg *config.Config, logger *slog.Logger) erro
 						if err := st.UpdateTopicRemote(id, tc.RemoteSSHHost, tc.RemoteWorkspacePath); err != nil {
 							logger.Warn("update remote_ssh failed", "topic_id", topicID, "error", err)
 						}
+						// Sync Wake-on-LAN wake fields. Always written so
+						// removing them from tgcc.toml disables WOL retry.
+						if err := st.UpdateTopicWOL(id, tc.WolMAC, tc.WolRelayHost); err != nil {
+							logger.Warn("update wol failed", "topic_id", topicID, "error", err)
+						}
 					}
 					synced++
 					logger.Debug("topic synced from tgcc.toml", "topic_id", topicID, "chat_id", g.ChatID, "thread_id", tc.ThreadID)

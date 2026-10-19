@@ -19,6 +19,8 @@ type Topic struct {
 	RequireMention      bool
 	RemoteSSHHost       string
 	RemoteWorkspacePath string
+	WolMAC              string
+	WolRelayHost        string
 	CreatedAt           int64
 }
 
@@ -87,11 +89,13 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	var ctxOverrides sql.NullString
 	var remoteSSHHost sql.NullString
 	var remoteWorkspacePath sql.NullString
+	var wolMAC sql.NullString
+	var wolRelayHost sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, wol_mac, wol_relay_host, created_at FROM topics WHERE chat_id = ? AND thread_id = ?`,
 		chatID, threadID,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &wolMAC, &wolRelayHost, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -110,6 +114,12 @@ func (s *Store) TopicByChatThread(chatID int64, threadID int64) (*Topic, error) 
 	}
 	if remoteWorkspacePath.Valid {
 		t.RemoteWorkspacePath = remoteWorkspacePath.String
+	}
+	if wolMAC.Valid {
+		t.WolMAC = wolMAC.String
+	}
+	if wolRelayHost.Valid {
+		t.WolRelayHost = wolRelayHost.String
 	}
 	return t, nil
 }
@@ -121,11 +131,13 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	var ctxOverrides sql.NullString
 	var remoteSSHHost sql.NullString
 	var remoteWorkspacePath sql.NullString
+	var wolMAC sql.NullString
+	var wolRelayHost sql.NullString
 	t := &Topic{}
 	err := s.DB.QueryRow(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, created_at FROM topics WHERE id = ?`,
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, wol_mac, wol_relay_host, created_at FROM topics WHERE id = ?`,
 		id,
-	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &t.CreatedAt)
+	).Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &wolMAC, &wolRelayHost, &t.CreatedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -145,6 +157,12 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 	if remoteWorkspacePath.Valid {
 		t.RemoteWorkspacePath = remoteWorkspacePath.String
 	}
+	if wolMAC.Valid {
+		t.WolMAC = wolMAC.String
+	}
+	if wolRelayHost.Valid {
+		t.WolRelayHost = wolRelayHost.String
+	}
 	return t, nil
 }
 
@@ -152,7 +170,7 @@ func (s *Store) TopicByID(id int64) (*Topic, error) {
 // by the outbox watcher to scan each topic's <workspace>/outbox/ directory.
 func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
 	rows, err := s.DB.Query(
-		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, created_at
+		`SELECT id, chat_id, thread_id, name, workspace_path, honcho_session_id, context_overrides, claude_model, require_mention, cli, remote_ssh_host, remote_workspace_path, wol_mac, wol_relay_host, created_at
 		 FROM topics WHERE workspace_path IS NOT NULL AND workspace_path != ''`,
 	)
 	if err != nil {
@@ -167,8 +185,10 @@ func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
 		var ctxOverrides sql.NullString
 		var remoteSSHHost sql.NullString
 		var remoteWorkspacePath sql.NullString
+		var wolMAC sql.NullString
+		var wolRelayHost sql.NullString
 		t := &Topic{}
-		if err := rows.Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &t.CreatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ChatID, &t.ThreadID, &t.Name, &workspace, &honchoSession, &ctxOverrides, &t.ClaudeModel, &t.RequireMention, &t.CLI, &remoteSSHHost, &remoteWorkspacePath, &wolMAC, &wolRelayHost, &t.CreatedAt); err != nil {
 			return nil, err
 		}
 		if workspace.Valid {
@@ -183,6 +203,12 @@ func (s *Store) TopicsWithWorkspace() ([]*Topic, error) {
 		}
 		if remoteWorkspacePath.Valid {
 			t.RemoteWorkspacePath = remoteWorkspacePath.String
+		}
+		if wolMAC.Valid {
+			t.WolMAC = wolMAC.String
+		}
+		if wolRelayHost.Valid {
+			t.WolRelayHost = wolRelayHost.String
 		}
 		topics = append(topics, t)
 	}
@@ -231,6 +257,15 @@ func (s *Store) UpdateTopicModel(topicID int64, model string) error {
 func (s *Store) UpdateTopicRemote(topicID int64, remoteSSHHost, remoteWorkspacePath string) error {
 	_, err := s.DB.Exec(`UPDATE topics SET remote_ssh_host = ?, remote_workspace_path = ? WHERE id = ?`,
 		nullString(remoteSSHHost), nullString(remoteWorkspacePath), topicID)
+	return err
+}
+
+// UpdateTopicWOL sets the Wake-on-LAN wake fields for a topic.
+// Both fields are always written (not gated on non-empty) so removing them
+// from tgcc.toml and restarting disables the WOL retry for that topic.
+func (s *Store) UpdateTopicWOL(topicID int64, wolMAC, wolRelayHost string) error {
+	_, err := s.DB.Exec(`UPDATE topics SET wol_mac = ?, wol_relay_host = ? WHERE id = ?`,
+		nullString(wolMAC), nullString(wolRelayHost), topicID)
 	return err
 }
 

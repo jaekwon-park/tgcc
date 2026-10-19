@@ -57,3 +57,18 @@ chat_id = -1001234567890
   # model                  = "gpt-5.5"
   # remote_ssh_host        = "flcl@10.1.1.104"
   # remote_workspace_path  = "C:\\Users\\FLCL\\re-analysis"
+
+  # Remote topic with Wake-on-LAN auto-retry: when the remote host is powered
+  # off (SSH connect times out / refused), tgcc wakes it before failing.
+  #   wol_mac         = the remote host's MAC address
+  #   wol_relay_host  = SSH host on the same L2 subnet that broadcasts the
+  #                     magic packet on tgcc's behalf (tgcc cannot reach the
+  #                     remote subnet's broadcast directly).
+  # [[group.topic]]
+  # thread_id              = 19350
+  # cli                    = "codex"
+  # model                  = "gpt-5.5"
+  # remote_ssh_host        = "flcl@10.1.1.104"
+  # remote_workspace_path  = "C:\\Users\\FLCL\\re-analysis"
+  # wol_mac                = "a0:ad:9f:cd:5e:8a"
+  # wol_relay_host         = "insainty@10.1.1.21"

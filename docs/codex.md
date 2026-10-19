@@ -43,6 +43,26 @@ When `remote_ssh_host` is set, `workspace_path` is ignored (leave it empty) and 
 
 Remote execution is minimal: photos are not forwarded to the remote host, `.notify-queue` draining does not apply, and Honcho transcript persistence relies on local rollout files and so does not capture remote conversations. SSH connection failures are reported to the user as a clear "원격 호스트 연결 실패" error. Removing `remote_ssh_host` from tgcc.toml and restarting reverts the topic to local execution.
 
+### Wake-on-LAN auto-retry
+
+A remote host that is powered off fails the SSH connect with `Connection timed out` / `Connection refused`. When a remote topic also sets `wol_mac` and `wol_relay_host`, tgcc wakes the host instead of failing immediately:
+
+```toml
+[[group.topic]]
+thread_id             = 19350
+cli                   = "codex"
+model                 = "gpt-5.5"
+remote_ssh_host       = "flcl@10.1.1.104"
+remote_workspace_path = "C:\\Users\\FLCL\\re-analysis"
+wol_mac               = "a0:ad:9f:cd:5e:8a"
+wol_relay_host        = "insainty@10.1.1.21"
+```
+
+- `wol_mac` is the remote host's MAC address.
+- `wol_relay_host` is an SSH host on the same L2 subnet as the remote host. tgcc itself cannot reach the remote subnet's broadcast address (Cloudflare WARP routes individual IPs only), so the relay host broadcasts the magic packet on tgcc's behalf.
+
+On a connect failure, tgcc SSHs into `wol_relay_host` and broadcasts a magic packet — preferring the `wakeonlan` binary when present and falling back to a self-contained Python sender. It then notifies the topic ("원격 호스트를 깨우는 중입니다...") and retries the SSH connect (default 5 attempts, 15s apart). Success resumes the normal codex exec; if the host never boots, the user gets "원격 호스트가 부팅되지 않았습니다. 직접 확인이 필요합니다". Topics without `wol_mac`/`wol_relay_host` keep the previous immediate-error behavior.
+
 ## Messages and commands
 
 Each request starts a short-lived codex exec process; later requests use exec resume with the saved thread ID. Prompts use stdin, photos use --image, and non-Git workspaces are supported. Assistant JSON events are relayed to Telegram and long messages are split.
@@ -85,7 +105,7 @@ go test -race -cover ./...
 
 Tests use fake Codex subprocesses and isolated SQLite databases. They cover thread continuity, models, photos, serial queues, independent topics, cancellation, writer retries, malformed/large output, commands, CLI switching and orphan recovery. They do not call a model or the live Telegram API.
 
-Migration 0009 adds topic/session CLI, Codex thread ID and process start identity. Migration 0010 adds `remote_ssh_host` and `remote_workspace_path` to topics. Ship migrations beside the executable. Do not run the new binary against the live database just to test it: opening the store applies migrations.
+Migration 0009 adds topic/session CLI, Codex thread ID and process start identity. Migration 0010 adds `remote_ssh_host` and `remote_workspace_path` to topics. Migration 0011 adds `wol_mac` and `wol_relay_host`. Ship migrations beside the executable. Do not run the new binary against the live database just to test it: opening the store applies migrations.
 
 Before deployment, back up the live WAL database with SQLite's backup API or sqlite3 .backup; copying only state.db while it is open is insufficient. Test migration and integrity/foreign-key checks on a copy, then stage the binary, SQL, TOML and service configuration. Start with one Codex topic and verify real messages, resume, images, cancellation, queue delivery, restart recovery and an existing Claude topic.
 
