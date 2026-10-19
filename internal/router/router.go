@@ -4,6 +4,7 @@ package router
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -328,6 +329,31 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 		return nil
 	}
 	if err := r.mgr.ForwardMessage(ctx, sess.ID, text); err != nil {
+		if errors.Is(err, session.ErrWindowGone) {
+			// The session's tmux window died (typically a hibernate-resume
+			// whose claude_session_id was no longer resumable — ADM-1178/1253).
+			// ForwardMessage already marked the session failed; spawn a fresh
+			// one and retry so the user's message isn't just dropped.
+			r.logger.Warn("forward message hit dead window, retrying with fresh session", "error", err, "session_id", sess.ID, "topic_id", topic.ID)
+			r.sender.Enqueue(bot.OutgoingMsg{
+				ChatID:   chat.ID,
+				ThreadID: threadID,
+				Text:     "⚠️ 세션이 끊어져 새로 시작합니다...",
+			})
+			if retryErr := r.spawnAndForward(ctx, topic, chat.ID, threadID, text); retryErr != nil {
+				r.logger.Error("retry after window-gone failed", "error", retryErr, "topic_id", topic.ID)
+				r.sender.Enqueue(bot.OutgoingMsg{
+					ChatID:   chat.ID,
+					ThreadID: threadID,
+					Text:     "⚠️ 메시지 전송 실패. 세션 상태를 확인하세요.",
+				})
+				return retryErr
+			}
+			if r.typingMgr != nil {
+				r.typingMgr.Ping(chat.ID, threadID)
+			}
+			return nil
+		}
 		r.logger.Error("forward message failed", "error", err, "session_id", sess.ID)
 		r.sender.Enqueue(bot.OutgoingMsg{
 			ChatID:   chat.ID,
@@ -345,6 +371,36 @@ func (r *Router) handlePlainMessage(ctx context.Context, update bot.Update, user
 	}
 
 	return nil
+}
+
+// spawnAndForward creates a fresh session for topic and forwards text to it,
+// polling briefly for the new session to reach "active" before forwarding so
+// the message isn't dropped on a pane that is still starting up. Used as the
+// one-shot retry path when ForwardMessage reports session.ErrWindowGone.
+func (r *Router) spawnAndForward(ctx context.Context, topic *store.Topic, chatID, threadID int64, text string) error {
+	model := ""
+	if topic.ClaudeModel.Valid {
+		model = topic.ClaudeModel.String
+	}
+	spawned, err := r.mgr.Spawn(ctx, topic.ID, topic.WorkspacePath, chatID, threadID, model)
+	if err != nil {
+		return fmt.Errorf("spawn: %w", err)
+	}
+	sess := spawned
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		s, gerr := r.store.SessionByID(sess.ID)
+		if gerr == nil && s != nil && s.Status == "active" {
+			sess = s
+			break
+		}
+		select {
+		case <-time.After(100 * time.Millisecond):
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return r.mgr.ForwardMessage(ctx, sess.ID, text)
 }
 
 // freshRestartFromHibernate rebuilds a hibernated session from a summary when
