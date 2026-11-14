@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -582,7 +583,7 @@ func (m *Manager) FreshRestart(ctx context.Context, oldSessionID string, summary
 			m.logger.Error("update status to active on fresh restart", "error", err)
 		}
 		if summary != "" {
-			if err := m.adapter.SendKeys(newSess.TmuxWindow, summary); err != nil {
+			if err := m.adapter.SendKeys(newSess.TmuxWindow, clampInjectText(summary)); err != nil {
 				m.logger.Warn("send summary on fresh restart failed", "error", err)
 			}
 		}
@@ -641,6 +642,13 @@ func (m *Manager) loadHonchoContext(ctx context.Context, topicID int64) string {
 	if err != nil || strings.TrimSpace(mem) == "" {
 		return ""
 	}
+	// tmux send-keys passes the text as a single argv string; the Linux kernel
+	// rejects any single argument larger than MAX_ARG_STRLEN (128 KiB) with
+	// E2BIG ("argument list too long"). Long-lived topics accumulate Honcho
+	// memory well past that limit, so keep only the most recent tail. The
+	// header/footer added below are tiny, so the final payload stays under the
+	// limit.
+	mem = clampInjectText(mem)
 	return "[이전 세션 맥락 — Honcho 장기 기억]\n" + mem +
 		"\n\n위 맥락을 참고만 하고, 이 메시지에는 응답하지 마세요. 다음 사용자 메시지를 기다리세요."
 }
@@ -847,6 +855,36 @@ func truncateString(s string, maxLen int) string {
 		return s
 	}
 	return s[:maxLen] + "..."
+}
+
+// maxInjectTextBytes bounds text passed to tmux send-keys as a single argv
+// argument. The kernel limit (MAX_ARG_STRLEN) is 128 KiB; use a comfortable
+// margin so the header/footer and truncation marker added by callers still
+// fit, and so multi-byte text is handled with room to spare.
+const maxInjectTextBytes = 100_000
+
+// clampInjectText keeps text safe for tmux send-keys by retaining only the most
+// recent maxInjectTextBytes bytes (rune-boundary safe) and prefixing a marker
+// when truncation occurred. The tail is kept because recent context matters
+// more than the oldest entries in accumulated Honcho memory.
+func clampInjectText(s string) string {
+	if len(s) <= maxInjectTextBytes {
+		return s
+	}
+	return "[...이전 내용 생략...]\n" + truncateInjectTail(s, maxInjectTextBytes)
+}
+
+// truncateInjectTail returns the last maxLen bytes of s without splitting a
+// multi-byte UTF-8 rune at the leading boundary, so the result is valid UTF-8.
+func truncateInjectTail(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	cut := s[len(s)-maxLen:]
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[1:]
+	}
+	return cut
 }
 
 // SquashOldestNTurns reads a JSONL transcript, extracts the oldest N turns
